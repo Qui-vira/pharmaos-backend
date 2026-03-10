@@ -1,0 +1,214 @@
+"""
+PharmaOS AI - Patient & Reminder Endpoints
+Patient registration, reminder scheduling and management.
+"""
+
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import get_current_user, require_roles, TokenData
+from app.models.models import Patient, Reminder, ReminderType, ReminderStatus
+from app.schemas.schemas import (
+    PatientCreateRequest, PatientResponse, PatientUpdateRequest,
+    ReminderCreateRequest, ReminderResponse, ReminderUpdateRequest,
+)
+from app.utils.helpers import paginate
+from app.middleware.audit import log_audit
+
+router = APIRouter(tags=["Patients & Reminders"])
+
+
+# ─── Patients ───────────────────────────────────────────────────────────────
+
+@router.get("/patients", response_model=dict)
+async def list_patients(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist", "cashier")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List patients for the current pharmacy."""
+    query = select(Patient).where(Patient.org_id == current_user.org_id)
+
+    if search:
+        query = query.where(
+            Patient.full_name.ilike(f"%{search}%") | Patient.phone.ilike(f"%{search}%")
+        )
+
+    query = query.order_by(Patient.full_name)
+
+    result = await paginate(db, query, page, page_size)
+    result["items"] = [PatientResponse.model_validate(p) for p in result["items"]]
+    return result
+
+
+@router.post("/patients", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
+async def create_patient(
+    payload: PatientCreateRequest,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a new patient."""
+
+    # Check uniqueness by phone within org
+    existing = await db.execute(
+        select(Patient).where(
+            Patient.org_id == current_user.org_id,
+            Patient.phone == payload.phone,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Patient with this phone number already exists.")
+
+    patient = Patient(
+        org_id=current_user.org_id,
+        full_name=payload.full_name,
+        phone=payload.phone,
+        date_of_birth=payload.date_of_birth,
+        gender=payload.gender,
+        allergies=payload.allergies or [],
+        chronic_conditions=payload.chronic_conditions or [],
+        consent_given=payload.consent_given,
+        consent_date=datetime.now(timezone.utc) if payload.consent_given else None,
+    )
+    db.add(patient)
+    await db.flush()
+
+    await log_audit(db, current_user.org_id, current_user.user_id, "create", "patient", patient.id)
+    return PatientResponse.model_validate(patient)
+
+
+@router.get("/patients/{patient_id}", response_model=PatientResponse)
+async def get_patient(
+    patient_id: UUID,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist", "cashier")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get patient details."""
+    result = await db.execute(
+        select(Patient).where(Patient.id == patient_id, Patient.org_id == current_user.org_id)
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    return PatientResponse.model_validate(patient)
+
+
+@router.put("/patients/{patient_id}", response_model=PatientResponse)
+async def update_patient(
+    patient_id: UUID,
+    payload: PatientUpdateRequest,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update patient information."""
+    result = await db.execute(
+        select(Patient).where(Patient.id == patient_id, Patient.org_id == current_user.org_id)
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+    update_data = payload.model_dump(exclude_unset=True)
+
+    # Track consent changes
+    if "consent_given" in update_data and update_data["consent_given"] and not patient.consent_given:
+        update_data["consent_date"] = datetime.now(timezone.utc)
+
+    for field, value in update_data.items():
+        setattr(patient, field, value)
+
+    await log_audit(db, current_user.org_id, current_user.user_id, "update", "patient", patient.id, update_data)
+    await db.flush()
+    return PatientResponse.model_validate(patient)
+
+
+# ─── Reminders ──────────────────────────────────────────────────────────────
+
+@router.get("/reminders", response_model=dict)
+async def list_reminders(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List reminders for the current pharmacy."""
+    query = select(Reminder).where(Reminder.org_id == current_user.org_id)
+
+    if status_filter:
+        query = query.where(Reminder.status == ReminderStatus(status_filter))
+
+    query = query.order_by(Reminder.scheduled_at.desc())
+
+    result = await paginate(db, query, page, page_size)
+    result["items"] = [ReminderResponse.model_validate(r) for r in result["items"]]
+    return result
+
+
+@router.post("/reminders", response_model=ReminderResponse, status_code=status.HTTP_201_CREATED)
+async def create_reminder(
+    payload: ReminderCreateRequest,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Schedule a new patient reminder."""
+
+    # Verify patient exists and has consent
+    patient_result = await db.execute(
+        select(Patient).where(Patient.id == payload.patient_id, Patient.org_id == current_user.org_id)
+    )
+    patient = patient_result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient.consent_given:
+        raise HTTPException(status_code=400, detail="Patient has not given consent for reminders.")
+
+    reminder = Reminder(
+        org_id=current_user.org_id,
+        patient_id=payload.patient_id,
+        reminder_type=ReminderType(payload.reminder_type),
+        product_id=payload.product_id,
+        scheduled_at=payload.scheduled_at,
+        recurrence_rule=payload.recurrence_rule,
+        message_template=payload.message_template,
+    )
+    db.add(reminder)
+    await db.flush()
+
+    await log_audit(db, current_user.org_id, current_user.user_id, "create", "reminder", reminder.id)
+    return ReminderResponse.model_validate(reminder)
+
+
+@router.put("/reminders/{reminder_id}", response_model=ReminderResponse)
+async def update_reminder(
+    reminder_id: UUID,
+    payload: ReminderUpdateRequest,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update or cancel a reminder."""
+    result = await db.execute(
+        select(Reminder).where(Reminder.id == reminder_id, Reminder.org_id == current_user.org_id)
+    )
+    reminder = result.scalar_one_or_none()
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Reminder not found.")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if "status" in update_data:
+        update_data["status"] = ReminderStatus(update_data["status"])
+
+    for field, value in update_data.items():
+        setattr(reminder, field, value)
+
+    await log_audit(db, current_user.org_id, current_user.user_id, "update", "reminder", reminder.id, update_data)
+    await db.flush()
+    return ReminderResponse.model_validate(reminder)
