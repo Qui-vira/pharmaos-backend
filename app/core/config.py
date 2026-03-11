@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "3.0.0"
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "https://pharmaos-frontend.vercel.app/"]
+    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "https://pharmaos-frontend.vercel.app"]
     FRONTEND_URL: str = "http://localhost:3000"  # v3: for payment callbacks
 
     # Database
