@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"  # v3: for payment callbacks
 
     # Database
-    DATABASE_URL: str = Field(default="postgresql+asyncpg://neondb_owner:npg_VnAZhp75TNWH@ep-restless-wave-abv5d1h7-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require")
+    DATABASE_URL: str = Field(default="postgresql+asyncpg://neondb_owner:npg_VnAZhp75TNWH@ep-restless-wave-abv5d1h7-pooler.eu-west-2.aws.neon.tech/neondb")
     DB_ECHO: bool = False
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
