@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "https://pharmaos-frontend.vercel.app"]
-    FRONTEND_URL: str = "http://localhost:3000"  # v3: for payment callbacks
+    FRONTEND_URL: str = "https://pharmaos-frontend.vercel.app"  # v3: for payment callbacks
 
     # Database
     DATABASE_URL: str = Field(default="postgresql+asyncpg://neondb_owner:npg_VnAZhp75TNWH@ep-restless-wave-abv5d1h7-pooler.eu-west-2.aws.neon.tech/neondb")
