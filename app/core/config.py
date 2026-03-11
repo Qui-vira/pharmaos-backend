@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"  # v3: for payment callbacks
 
     # Database
-    DATABASE_URL: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/pharmaos")
+    DATABASE_URL: str = Field(default="postgresql+asyncpg://neondb_owner:npg_VnAZhp75TNWH@ep-restless-wave-abv5d1h7-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require")
     DB_ECHO: bool = False
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # JWT
-    JWT_SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION"
+    JWT_SECRET_KEY: str = "88a82c693fe4ce83b6a9b9d8eca5f093339658cbc4c870cfadb64ba1fd41e73d0867b629707486c62daeca0936b1dab83f518d5ceeb12329c4f2bb35df304ccc"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
