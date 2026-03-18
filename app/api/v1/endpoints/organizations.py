@@ -55,6 +55,7 @@ async def get_org_public(
         select(
             Organization.id, Organization.name, Organization.city,
             Organization.state, Organization.phone, Organization.is_active,
+            Organization.whatsapp_phone_number_id,
         ).where(Organization.id == org_id)
     )
     org = result.one_or_none()
@@ -67,6 +68,7 @@ async def get_org_public(
         "city": org.city,
         "state": org.state,
         "phone": org.phone,
+        "whatsapp_number": org.whatsapp_phone_number_id,
     }
 
 

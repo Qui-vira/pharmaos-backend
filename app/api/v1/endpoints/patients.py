@@ -123,7 +123,9 @@ async def self_register_patient(
 
     # Validate org exists and is active
     org_result = await db.execute(
-        select(Organization.id, Organization.is_active).where(Organization.id == payload.org_id)
+        select(Organization.id, Organization.is_active, Organization.whatsapp_phone_number_id).where(
+            Organization.id == payload.org_id
+        )
     )
     org = org_result.one_or_none()
     if not org or not org.is_active:
@@ -159,7 +161,11 @@ async def self_register_patient(
     await db.flush()
 
     logger.info("Patient self-registered at org %s", str(payload.org_id)[:8])
-    return {"message": "Registration successful", "patient_id": str(patient.id)}
+
+    response = {"message": "Registration successful", "patient_id": str(patient.id)}
+    if org.whatsapp_phone_number_id:
+        response["whatsapp_number"] = org.whatsapp_phone_number_id
+    return response
 
 
 @router.get("/patients/{patient_id}", response_model=PatientResponse)
