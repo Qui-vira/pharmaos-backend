@@ -36,6 +36,10 @@ celery_app.conf.update(
             "task": "app.tasks.celery_app.scan_expiry_alerts",
             "schedule": 86400.0,  # Daily
         },
+        "check-reorder-predictions": {
+            "task": "app.tasks.celery_app.check_reorder_predictions",
+            "schedule": 86400.0,  # Daily
+        },
     },
 )
 
@@ -268,16 +272,184 @@ def process_catalog_upload(file_path: str, org_id: str, source: str = "csv_uploa
 
 @celery_app.task(name="app.tasks.celery_app.scan_expiry_alerts")
 def scan_expiry_alerts():
-    """Daily: Scan batches and create/update expiry alerts."""
+    """
+    Daily: Scan batches for expiry alerts, create ExpiryTracking records,
+    calculate risk scores, and notify pharmacy admins with potential loss estimates.
+    """
     logger.info("Scanning for expiry alerts...")
 
-    # Production implementation:
-    # 1. Query all batches with expiry_date within 90 days
-    # 2. For each batch, determine alert tier (expired/critical/warning/approaching)
-    # 3. Create ExpiryTracking records for new alerts
-    # 4. Notify pharmacy admins via in-app notifications
+    async def _scan():
+        from datetime import date, timedelta
+        from sqlalchemy import select
+        from app.core.database import async_session_factory
+        from app.models.models import (
+            Batch, ExpiryTracking, ExpiryAlertType, Notification, Organization, User, UserRole,
+        )
+        from app.services.analytics import expiry_risk_scoring
 
-    return {"scanned": 0, "alerts_created": 0}
+        today = date.today()
+        alerts_created = 0
+        notifications_created = 0
+
+        async with async_session_factory() as db:
+            # Get all active orgs
+            orgs = (await db.execute(
+                select(Organization.id).where(Organization.is_active == True)
+            )).scalars().all()
+
+            for org_id in orgs:
+                # Scan batches expiring within 90 days
+                horizon = today + timedelta(days=90)
+                batches = (await db.execute(
+                    select(Batch).where(
+                        Batch.org_id == org_id,
+                        Batch.expiry_date <= horizon,
+                        Batch.quantity > 0,
+                    )
+                )).scalars().all()
+
+                for batch in batches:
+                    days_left = (batch.expiry_date - today).days
+
+                    if days_left <= 0:
+                        alert_type = ExpiryAlertType.expired
+                    elif days_left <= 7:
+                        alert_type = ExpiryAlertType.critical
+                    elif days_left <= 30:
+                        alert_type = ExpiryAlertType.warning
+                    else:
+                        alert_type = ExpiryAlertType.approaching
+
+                    # Check if alert already exists for this batch + type
+                    existing = (await db.execute(
+                        select(ExpiryTracking.id).where(
+                            ExpiryTracking.batch_id == batch.id,
+                            ExpiryTracking.alert_type == alert_type,
+                            ExpiryTracking.is_resolved == False,
+                        )
+                    )).scalar_one_or_none()
+
+                    if not existing:
+                        tracking = ExpiryTracking(
+                            org_id=org_id,
+                            batch_id=batch.id,
+                            alert_type=alert_type,
+                            alert_date=today,
+                        )
+                        db.add(tracking)
+                        alerts_created += 1
+
+                # Get risk scores and notify admins about high-risk batches
+                risk_scores = await expiry_risk_scoring(db, org_id)
+                high_risk = [r for r in risk_scores if r["risk_score"] > 80]
+
+                if high_risk:
+                    # Find pharmacy admins to notify
+                    admins = (await db.execute(
+                        select(User.id).where(
+                            User.org_id == org_id,
+                            User.role == UserRole.pharmacy_admin,
+                            User.is_active == True,
+                        )
+                    )).scalars().all()
+
+                    for risk_item in high_risk[:10]:  # Cap at 10 notifications per org
+                        for admin_id in admins:
+                            notif = Notification(
+                                org_id=org_id,
+                                user_id=admin_id,
+                                type="expiry_risk",
+                                title=f"Expiry Risk: {risk_item['product_name']}",
+                                body=(
+                                    f"Batch {risk_item['batch_number'] or 'N/A'} expires in {risk_item['days_left']} days. "
+                                    f"Risk score: {risk_item['risk_score']}/100. "
+                                    f"Potential loss: \u20a6{risk_item['potential_loss']:,.2f}. "
+                                    f"Action: {risk_item['suggested_action'].replace('_', ' ').title()}"
+                                ),
+                                link="/expiry",
+                            )
+                            db.add(notif)
+                            notifications_created += 1
+
+            await db.commit()
+
+        return {"scanned": len(orgs), "alerts_created": alerts_created, "notifications": notifications_created}
+
+    result = run_async(_scan())
+    logger.info("Expiry scan complete: %s", result)
+    return result
+
+
+@celery_app.task(name="app.tasks.celery_app.check_reorder_predictions")
+def check_reorder_predictions():
+    """
+    Daily: Run reorder predictions for each org and create notifications
+    for products that need reordering.
+    """
+    logger.info("Checking reorder predictions...")
+
+    async def _check():
+        from sqlalchemy import select
+        from app.core.database import async_session_factory
+        from app.models.models import Notification, Organization, User, UserRole
+        from app.services.analytics import reorder_predictions
+
+        notifications_created = 0
+
+        async with async_session_factory() as db:
+            orgs = (await db.execute(
+                select(Organization.id).where(Organization.is_active == True)
+            )).scalars().all()
+
+            for org_id in orgs:
+                predictions = await reorder_predictions(db, org_id)
+
+                # Only notify for urgent and soon items
+                actionable = [
+                    p for p in predictions
+                    if p["reorder_urgency"] in ("reorder_urgent", "reorder_soon")
+                ]
+
+                if not actionable:
+                    continue
+
+                # Find pharmacy admins
+                admins = (await db.execute(
+                    select(User.id).where(
+                        User.org_id == org_id,
+                        User.role == UserRole.pharmacy_admin,
+                        User.is_active == True,
+                    )
+                )).scalars().all()
+
+                for item in actionable[:15]:  # Cap at 15 per org
+                    is_urgent = item["reorder_urgency"] == "reorder_urgent"
+                    days = item["days_until_stockout"]
+                    days_str = f"{days:.0f}" if days is not None else "unknown"
+
+                    for admin_id in admins:
+                        notif = Notification(
+                            org_id=org_id,
+                            user_id=admin_id,
+                            type="reorder_alert",
+                            title=f"{'URGENT ' if is_urgent else ''}Reorder Alert: {item['product_name']}",
+                            body=(
+                                f"Estimated {days_str} days until stockout. "
+                                f"Current stock: {item['current_stock']} units. "
+                                f"Suggested order: {item['suggested_reorder_qty']} units"
+                            ),
+                            link="/inventory",
+                        )
+                        db.add(notif)
+                        notifications_created += 1
+
+            await db.commit()
+
+        return {"orgs_checked": len(orgs), "notifications": notifications_created}
+
+    result = run_async(_check())
+    logger.info("Reorder check complete: %s", result)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
