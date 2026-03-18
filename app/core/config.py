@@ -1,11 +1,15 @@
 """
 PharmaOS AI - Application Configuration (v3)
 Added: Paystack, Flutterwave, frontend URL settings.
+All secrets MUST be provided via environment variables or .env file.
 """
 
+import logging
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -16,8 +20,8 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "https://pharmaos-frontend.vercel.app"]
     FRONTEND_URL: str = "https://pharmaos-frontend.vercel.app"  # v3: for payment callbacks
 
-    # Database
-    DATABASE_URL: str = Field(default="postgresql+asyncpg://neondb_owner:npg_VnAZhp75TNWH@ep-restless-wave-abv5d1h7-pooler.eu-west-2.aws.neon.tech/neondb")
+    # Database — MUST be set via environment variable
+    DATABASE_URL: str = Field(default="postgresql+asyncpg://localhost/pharmaos")
     DB_ECHO: bool = False
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
@@ -25,8 +29,8 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # JWT
-    JWT_SECRET_KEY: str = "88a82c693fe4ce83b6a9b9d8eca5f093339658cbc4c870cfadb64ba1fd41e73d0867b629707486c62daeca0936b1dab83f518d5ceeb12329c4f2bb35df304ccc"
+    # JWT — MUST be set via environment variable
+    JWT_SECRET_KEY: str = Field(default="CHANGE-ME-set-a-strong-secret-in-env-vars-at-least-32-chars-long")
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -69,3 +73,24 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Startup warnings for missing optional service configs
+_optional_services = {
+    "WHATSAPP_PHONE_NUMBER_ID": "WhatsApp integration",
+    "TWILIO_ACCOUNT_SID": "Twilio SMS",
+    "LLM_API_KEY": "AI/LLM features",
+    "PAYSTACK_SECRET_KEY": "Paystack payments",
+    "FLUTTERWAVE_SECRET_KEY": "Flutterwave payments",
+    "S3_BUCKET": "S3 file storage",
+}
+for var, service in _optional_services.items():
+    if getattr(settings, var, None) is None:
+        logger.info("Optional config %s not set — %s will be disabled.", var, service)
+
+# Warn if using default (insecure) JWT secret
+if "CHANGE-ME" in settings.JWT_SECRET_KEY:
+    logger.warning("JWT_SECRET_KEY is using the default placeholder. Set a strong secret via environment variable!")
+
+# Warn if using default database URL
+if settings.DATABASE_URL == "postgresql+asyncpg://localhost/pharmaos":
+    logger.warning("DATABASE_URL is using default. Set it via environment variable for production.")
