@@ -48,22 +48,60 @@ class WhatsAppService:
 
     async def _send(self, payload: dict) -> dict:
         """Send a message via WhatsApp Cloud API."""
+        recipient = payload.get("to", "?")
+        msg_type = payload.get("type", "?")
+
         if not self.is_configured:
-            logger.warning("WhatsApp not configured — skipping message send")
+            logger.warning(
+                "WA_SEND SKIPPED: not configured. "
+                "PHONE_NUMBER_ID=%s ACCESS_TOKEN=%s",
+                "SET" if self.phone_number_id else "MISSING",
+                "SET" if self.access_token else "MISSING",
+            )
             return {"status": "skipped", "reason": "not_configured"}
+
+        # Log outbound attempt with credential diagnostics
+        token_preview = (self.access_token or "")[:12] + "..." if self.access_token else "NONE"
+        logger.info(
+            "WA_SEND ATTEMPT: to=%s type=%s phone_number_id=%s token=%s url=%s",
+            recipient, msg_type, self.phone_number_id, token_preview, self._url,
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(self._url, json=payload, headers=self._headers)
+
+                # Log EVERY response regardless of status
+                logger.info(
+                    "WA_SEND RESPONSE: to=%s status_code=%d body=%s",
+                    recipient, response.status_code, response.text[:500],
+                )
+
                 response.raise_for_status()
                 data = response.json()
-                logger.info(f"WhatsApp message sent: {data}")
-                return {"status": "sent", "response": data}
+
+                # Extract message ID for tracking
+                wa_msg_id = None
+                if "messages" in data:
+                    wa_msg_id = data["messages"][0].get("id") if data["messages"] else None
+
+                logger.info(
+                    "WA_SEND OK: to=%s type=%s wamid=%s",
+                    recipient, msg_type, wa_msg_id,
+                )
+                return {"status": "sent", "wamid": wa_msg_id, "response": data}
+
         except httpx.HTTPStatusError as e:
-            logger.error(f"WhatsApp API error: {e.response.status_code} — {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
+            logger.error(
+                "WA_SEND FAILED: to=%s status_code=%d error=%s phone_number_id=%s",
+                recipient, e.response.status_code, e.response.text[:500], self.phone_number_id,
+            )
+            return {"status": "failed", "status_code": e.response.status_code, "error": e.response.text}
+        except httpx.ConnectError as e:
+            logger.error("WA_SEND CONNECT_ERROR: to=%s error=%s", recipient, str(e))
+            return {"status": "failed", "error": f"Connection error: {e}"}
         except Exception as e:
-            logger.error(f"WhatsApp send error: {e}")
+            logger.error("WA_SEND EXCEPTION: to=%s error=%s", recipient, str(e), exc_info=True)
             return {"status": "failed", "error": str(e)}
 
     # ─── Text Messages ──────────────────────────────────────────────────
@@ -312,3 +350,20 @@ def parse_inbound_message(data: dict) -> list[dict]:
 # ─── Singleton ──────────────────────────────────────────────────────────────
 
 whatsapp_service = WhatsAppService()
+
+# Startup diagnostic — this logs once when the module loads
+_phone_id = whatsapp_service.phone_number_id or ""
+_token = whatsapp_service.access_token or ""
+_is_test_number = _phone_id in (
+    "15551727791", "15551234567",  # Meta's known test phone number IDs
+    # Meta test WABAs use specific phone_number_ids — add yours if known
+)
+logger.info(
+    "WA_INIT: configured=%s phone_number_id=%s token_len=%d token_prefix=%s api=%s%s",
+    whatsapp_service.is_configured,
+    _phone_id if _phone_id else "MISSING",
+    len(_token),
+    _token[:12] + "..." if _token else "NONE",
+    WHATSAPP_API_BASE,
+    " *** WARNING: This may be a Meta TEST number — cannot send to real users ***" if _is_test_number else "",
+)
