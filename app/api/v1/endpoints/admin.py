@@ -368,3 +368,48 @@ async def update_subscription(
     org.settings = current_settings
     await db.flush()
     return {"message": "Subscription updated.", "settings": {k: current_settings.get(k) for k in allowed_fields}}
+
+
+# TODO: Remove this debug endpoint — for testing only
+@router.post("/consultations/reset-patient/{phone}")
+async def reset_patient_consultations(
+    phone: str,
+    current_user: TokenData = Depends(require_roles("super_admin", "pharmacy_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel all active consultations for a phone number so a fresh test can start."""
+    # Find patient by phone (handle +/no-+ mismatch)
+    normalized = phone.strip().lstrip("+")
+    with_plus = f"+{normalized}"
+    result = await db.execute(
+        select(Patient).where(Patient.phone.in_([phone, normalized, with_plus])).limit(1)
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail=f"No patient found for phone {phone}")
+
+    active_statuses = [
+        ConsultationStatus.intake,
+        ConsultationStatus.ai_processing,
+        ConsultationStatus.awaiting_payment,
+        ConsultationStatus.pending_review,
+        ConsultationStatus.pharmacist_reviewing,
+        ConsultationStatus.approved,
+    ]
+    consults = await db.execute(
+        select(Consultation).where(
+            Consultation.patient_id == patient.id,
+            Consultation.status.in_(active_statuses),
+        )
+    )
+    cancelled = 0
+    for c in consults.scalars().all():
+        c.status = ConsultationStatus.cancelled
+        cancelled += 1
+
+    await db.flush()
+    return {
+        "message": f"Cancelled {cancelled} active consultation(s) for {phone}",
+        "patient_id": str(patient.id),
+        "patient_name": patient.full_name,
+    }
