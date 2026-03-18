@@ -79,6 +79,34 @@ def _check_rate_limit(action: str, key: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  ACCOUNT LOCKOUT (10 failed verification attempts in 1 hour)
+# ═══════════════════════════════════════════════════════════════════════════
+
+LOCKOUT_MAX_FAILURES = 10
+LOCKOUT_WINDOW_SECONDS = 3600  # 1 hour
+_failed_verify_attempts: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_account_lockout(identifier: str) -> None:
+    """Check if an account is locked due to too many failed verification attempts."""
+    now = time.time()
+    _failed_verify_attempts[identifier] = [
+        t for t in _failed_verify_attempts[identifier] if now - t < LOCKOUT_WINDOW_SECONDS
+    ]
+    if len(_failed_verify_attempts[identifier]) >= LOCKOUT_MAX_FAILURES:
+        raise HTTPException(
+            status_code=423,
+            detail="Account temporarily locked due to too many failed attempts. Try again later.",
+            headers={"Retry-After": str(LOCKOUT_WINDOW_SECONDS)},
+        )
+
+
+def _record_failed_attempt(identifier: str) -> None:
+    """Record a failed verification attempt for lockout tracking."""
+    _failed_verify_attempts[identifier].append(time.time())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  OTP HELPERS (never log codes, always hash before storing)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -273,6 +301,7 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, db: AsyncS
     """Verify email with 6-digit code. Returns tokens on success."""
     ip = _get_client_ip(request)
     _check_rate_limit("verify", ip)
+    _check_account_lockout(payload.email)
 
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
@@ -281,6 +310,7 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, db: AsyncS
     generic_fail = "Invalid or expired verification code."
 
     if not user:
+        _record_failed_attempt(payload.email)
         await log_auth_event(db, "verify_email_failed", payload.email, False, ip)
         raise HTTPException(status_code=400, detail=generic_fail)
 
@@ -299,6 +329,7 @@ async def verify_email(payload: VerifyEmailRequest, request: Request, db: AsyncS
         raise HTTPException(status_code=400, detail="Verification code expired. Please request a new one.")
 
     if not _verify_otp(payload.code, user.verification_hash):
+        _record_failed_attempt(payload.email)
         await log_auth_event(db, "verify_email_failed", payload.email, False, ip)
         raise HTTPException(status_code=400, detail=generic_fail)
 
@@ -502,6 +533,7 @@ async def verify_phone(
     """Verify phone number with OTP code."""
     ip = _get_client_ip(request)
     _check_rate_limit("verify", ip)
+    _check_account_lockout(payload.phone)
 
     result = await db.execute(select(User).where(User.id == current_user.user_id))
     user = result.scalar_one_or_none()
@@ -518,6 +550,7 @@ async def verify_phone(
         raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
 
     if not _verify_otp(payload.code, user.phone_otp_hash):
+        _record_failed_attempt(payload.phone)
         await log_auth_event(db, "verify_phone_failed", user.email, False, ip, user.org_id, user.id)
         raise HTTPException(status_code=400, detail=generic_fail)
 
@@ -591,8 +624,11 @@ async def confirm_2fa(
 
     from app.services.totp import decrypt_secret, verify_totp
 
+    _check_account_lockout(str(user.id))
+
     secret = decrypt_secret(user.two_factor_secret_encrypted)
     if not verify_totp(secret, payload.code):
+        _record_failed_attempt(str(user.id))
         await log_auth_event(db, "confirm_2fa_failed", user.email, False, ip, user.org_id, user.id)
         raise HTTPException(status_code=400, detail="Invalid 2FA code.")
 
@@ -617,6 +653,8 @@ async def verify_2fa(payload: Verify2FARequest, request: Request, db: AsyncSessi
     token_data = decode_token(payload.temp_token)
     user_id = token_data.get("sub")
 
+    _check_account_lockout(str(user_id))
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.two_factor_enabled or not user.two_factor_secret_encrypted:
@@ -626,6 +664,7 @@ async def verify_2fa(payload: Verify2FARequest, request: Request, db: AsyncSessi
 
     secret = decrypt_secret(user.two_factor_secret_encrypted)
     if not verify_totp(secret, payload.code):
+        _record_failed_attempt(str(user_id))
         await log_auth_event(db, "2fa_verify_failed", user.email, False, ip, user.org_id, user.id)
         raise HTTPException(status_code=400, detail="Invalid 2FA code.")
 
