@@ -23,6 +23,7 @@ from app.schemas.schemas import (
     RegisterRequest, LoginRequest, TokenResponse,
     RefreshRequest, UserResponse, OrgResponse,
 )
+from app.middleware.audit import log_auth_event
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,8 @@ async def register(payload: RegisterRequest, request: Request, db: AsyncSession 
     access_token = create_access_token(str(user.id), str(org.id), user.role.value)
     refresh_token = create_refresh_token(str(user.id), str(org.id))
 
+    await log_auth_event(db, "register", payload.admin_email, True, ip, org.id, user.id)
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -130,6 +133,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
 
     if not user or not verify_password(payload.password, user.password_hash):
         logger.warning("Failed login attempt for email: %s from IP: %s", payload.email, ip)
+        await log_auth_event(db, "login_failed", payload.email, False, ip)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if not user.is_active:
@@ -141,6 +145,8 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
 
     access_token = create_access_token(str(user.id), str(user.org_id), user.role.value)
     refresh_token = create_refresh_token(str(user.id), str(user.org_id))
+
+    await log_auth_event(db, "login", payload.email, True, ip, user.org_id, user.id)
 
     return TokenResponse(
         access_token=access_token,
