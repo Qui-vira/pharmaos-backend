@@ -120,7 +120,7 @@ def require_roles(*allowed_roles: str):
         if current_user.role not in allowed_roles and current_user.role != "super_admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{current_user.role}' does not have permission for this action.",
+                detail="You do not have permission for this action.",
             )
         return current_user
     return role_checker

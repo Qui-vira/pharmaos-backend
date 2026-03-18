@@ -52,6 +52,7 @@ async def mark_notification_read(
         update(Notification)
         .where(
             Notification.id == notification_id,
+            Notification.org_id == current_user.org_id,
             Notification.user_id == current_user.user_id,
         )
         .values(is_read=True)
@@ -68,6 +69,7 @@ async def mark_all_read(
     await db.execute(
         update(Notification)
         .where(
+            Notification.org_id == current_user.org_id,
             Notification.user_id == current_user.user_id,
             Notification.is_read == False,
         )
