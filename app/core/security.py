@@ -3,6 +3,7 @@ PharmaOS AI - Security & Authentication
 JWT token management and password hashing.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -14,8 +15,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import settings
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
+
+# Validate JWT secret key length at import time
+if len(settings.JWT_SECRET_KEY) < 32:
+    raise RuntimeError("JWT_SECRET_KEY must be at least 32 characters. Check your environment variables.")
+
+# Password hashing with explicit bcrypt rounds
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 # Bearer token extractor
 bearer_scheme = HTTPBearer()
@@ -66,10 +73,10 @@ def decode_token(token: str) -> dict:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         return payload
-    except JWTError as e:
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}",
+            detail="Invalid or expired token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

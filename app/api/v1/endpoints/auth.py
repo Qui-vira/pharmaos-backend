@@ -3,9 +3,12 @@ PharmaOS AI - Authentication Endpoints
 Registration, login, token refresh, and profile.
 """
 
+import time
+import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,12 +24,50 @@ from app.schemas.schemas import (
     RefreshRequest, UserResponse, OrgResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+# ─── Rate Limiting (in-memory) ─────────────────────────────────────────────
+
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_register_attempts: dict[str, list[float]] = defaultdict(list)
+
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+
+REGISTER_MAX_ATTEMPTS = 3
+REGISTER_WINDOW_SECONDS = 3600  # 1 hour
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(
+    store: dict[str, list[float]], ip: str, max_attempts: int, window: int
+) -> None:
+    now = time.time()
+    # Clean expired entries
+    store[ip] = [t for t in store[ip] if now - t < window]
+    if len(store[ip]) >= max_attempts:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(window)},
+        )
+    store[ip].append(now)
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(payload: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Register a new organization and its admin user."""
+    ip = _get_client_ip(request)
+    _check_rate_limit(_register_attempts, ip, REGISTER_MAX_ATTEMPTS, REGISTER_WINDOW_SECONDS)
 
     # Check if email already exists
     existing = await db.execute(select(User).where(User.email == payload.admin_email))
@@ -79,13 +120,16 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Authenticate user and return JWT tokens."""
+    ip = _get_client_ip(request)
+    _check_rate_limit(_login_attempts, ip, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_SECONDS)
 
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(payload.password, user.password_hash):
+        logger.warning("Failed login attempt for email: %s from IP: %s", payload.email, ip)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if not user.is_active:
