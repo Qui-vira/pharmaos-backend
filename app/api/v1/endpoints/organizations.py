@@ -2,7 +2,11 @@
 PharmaOS AI - Organization & User Management Endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import time
+from collections import defaultdict
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +20,54 @@ from app.schemas.schemas import (
 from app.middleware.audit import log_audit
 
 router = APIRouter(prefix="/orgs", tags=["Organizations"])
+
+# In-memory rate limiter for public org info: 30 per IP per minute
+_public_org_store: dict[str, list[float]] = defaultdict(list)
+_PUBLIC_ORG_LIMIT = 30
+_PUBLIC_ORG_WINDOW = 60
+
+
+@router.get("/{org_id}/public")
+async def get_org_public(
+    org_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public endpoint — returns minimal org info for patient-facing screens (QR code, self-registration).
+    No authentication required. Only exposes name, city, state, phone.
+    """
+    # Rate limit by IP
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not ip:
+        ip = request.client.host if request.client else "unknown"
+
+    now = time.time()
+    _public_org_store[ip] = [t for t in _public_org_store[ip] if now - t < _PUBLIC_ORG_WINDOW]
+    if len(_public_org_store[ip]) >= _PUBLIC_ORG_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+        )
+    _public_org_store[ip].append(now)
+
+    result = await db.execute(
+        select(
+            Organization.id, Organization.name, Organization.city,
+            Organization.state, Organization.phone, Organization.is_active,
+        ).where(Organization.id == org_id)
+    )
+    org = result.one_or_none()
+    if not org or not org.is_active:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+
+    return {
+        "id": str(org.id),
+        "name": org.name,
+        "city": org.city,
+        "state": org.state,
+        "phone": org.phone,
+    }
 
 
 @router.get("/me", response_model=OrgResponse)

@@ -3,25 +3,36 @@ PharmaOS AI - Patient & Reminder Endpoints
 Patient registration, reminder scheduling and management.
 """
 
+import logging
+import re
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles, TokenData
-from app.models.models import Patient, Reminder, ReminderType, ReminderStatus
+from app.models.models import Organization, Patient, Reminder, ReminderType, ReminderStatus
 from app.schemas.schemas import (
-    PatientCreateRequest, PatientResponse, PatientUpdateRequest,
+    PatientCreateRequest, PatientResponse, PatientSelfRegisterRequest,
+    PatientUpdateRequest,
     ReminderCreateRequest, ReminderResponse, ReminderUpdateRequest,
 )
 from app.utils.helpers import paginate, sanitize_like
 from app.middleware.audit import log_audit
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Patients & Reminders"])
+
+# In-memory rate limiter for public self-registration: 10 per IP per hour
+_self_reg_store: dict[str, list[float]] = defaultdict(list)
+_SELF_REG_LIMIT = 10
+_SELF_REG_WINDOW = 3600  # 1 hour
 
 
 # ─── Patients ───────────────────────────────────────────────────────────────
@@ -84,6 +95,71 @@ async def create_patient(
 
     await log_audit(db, current_user.org_id, current_user.user_id, "create", "patient", patient.id)
     return PatientResponse.model_validate(patient)
+
+
+@router.post("/patients/self-register", status_code=status.HTTP_201_CREATED)
+async def self_register_patient(
+    payload: PatientSelfRegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public endpoint for patient self-registration (e.g. via QR code at pharmacy).
+    No authentication required. Rate limited to 10 per IP per hour.
+    """
+    # Rate limit by IP
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not ip:
+        ip = request.client.host if request.client else "unknown"
+
+    now = time.time()
+    _self_reg_store[ip] = [t for t in _self_reg_store[ip] if now - t < _SELF_REG_WINDOW]
+    if len(_self_reg_store[ip]) >= _SELF_REG_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many registration attempts. Please try again later.",
+        )
+    _self_reg_store[ip].append(now)
+
+    # Validate org exists and is active
+    org_result = await db.execute(
+        select(Organization.id, Organization.is_active).where(Organization.id == payload.org_id)
+    )
+    org = org_result.one_or_none()
+    if not org or not org.is_active:
+        raise HTTPException(status_code=400, detail="Invalid or inactive pharmacy.")
+
+    # Validate phone format
+    phone = payload.phone.strip()
+    if not re.match(r"^\+?\d{10,15}$", phone):
+        raise HTTPException(status_code=400, detail="Invalid phone number format.")
+
+    # Check for duplicate (phone + org_id)
+    existing = await db.execute(
+        select(Patient.id).where(
+            Patient.org_id == payload.org_id,
+            Patient.phone == phone,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="You are already registered at this pharmacy.")
+
+    patient = Patient(
+        org_id=payload.org_id,
+        full_name=payload.full_name.strip(),
+        phone=phone,
+        date_of_birth=payload.date_of_birth,
+        gender=payload.gender,
+        allergies=payload.allergies or [],
+        chronic_conditions=payload.chronic_conditions or [],
+        consent_given=True,
+        consent_date=datetime.now(timezone.utc),
+    )
+    db.add(patient)
+    await db.flush()
+
+    logger.info("Patient self-registered at org %s", str(payload.org_id)[:8])
+    return {"message": "Registration successful", "patient_id": str(patient.id)}
 
 
 @router.get("/patients/{patient_id}", response_model=PatientResponse)

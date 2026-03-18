@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
 
 # ─── Auth Schemas ───────────────────────────────────────────────────────────
@@ -448,6 +448,24 @@ class PatientUpdateRequest(BaseModel):
     allergies: Optional[List[str]] = None
     chronic_conditions: Optional[List[str]] = None
     consent_given: Optional[bool] = None
+
+
+class PatientSelfRegisterRequest(BaseModel):
+    org_id: UUID
+    full_name: str = Field(..., min_length=2, max_length=255)
+    phone: str = Field(..., min_length=10, max_length=20, pattern=r"^\+?\d{10,15}$")
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
+    allergies: Optional[List[str]] = []
+    chronic_conditions: Optional[List[str]] = []
+    consent_given: bool
+
+    @field_validator("consent_given")
+    @classmethod
+    def must_consent(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("Consent must be given to register.")
+        return v
 
 
 # ─── Reminder Schemas ───────────────────────────────────────────────────────
