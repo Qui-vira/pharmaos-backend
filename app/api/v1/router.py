@@ -5,6 +5,7 @@ PharmaOS AI - API v1 Router
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    analytics,
     auth,
     organizations,
     products,
@@ -21,6 +22,7 @@ from app.api.v1.endpoints import (
 
 api_router = APIRouter()
 
+api_router.include_router(analytics.router)
 api_router.include_router(auth.router)
 api_router.include_router(organizations.router)
 api_router.include_router(products.router)
