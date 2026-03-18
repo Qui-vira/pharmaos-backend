@@ -168,6 +168,24 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
+    # Email verification
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    verification_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    verification_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Phone OTP verification
+    phone_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    phone_otp_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    phone_otp_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Two-factor authentication
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    two_factor_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Google OAuth
+    google_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
     organization: Mapped["Organization"] = relationship(back_populates="users", lazy="selectin")
     __table_args__ = (Index("ix_users_org_id", "org_id"),)
 

@@ -43,6 +43,54 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=6, max_length=6, pattern="^[0-9]{6}$")
+
+
+class ResendCodeRequest(BaseModel):
+    email: EmailStr
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str = Field(..., min_length=10)
+    org_type: str = Field("pharmacy", pattern="^(pharmacy|distributor|wholesaler)$")
+    org_name: Optional[str] = Field(None, min_length=2, max_length=255)
+
+
+class SendPhoneOtpRequest(BaseModel):
+    phone: str = Field(..., min_length=10, max_length=20)
+
+
+class VerifyPhoneRequest(BaseModel):
+    phone: str = Field(..., min_length=10, max_length=20)
+    code: str = Field(..., min_length=6, max_length=6, pattern="^[0-9]{6}$")
+
+
+class Enable2FAResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_code_url: str
+
+
+class Verify2FARequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6, pattern="^[0-9]{6}$")
+    temp_token: Optional[str] = None
+
+
+class LoginResponse(BaseModel):
+    """Extended login response that may require additional verification steps."""
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    user: Optional["UserResponse"] = None
+    requires_verification: bool = False
+    requires_2fa: bool = False
+    temp_token: Optional[str] = None
+    message: Optional[str] = None
+    email: Optional[str] = None
+
+
 # ─── Organization Schemas ───────────────────────────────────────────────────
 
 
@@ -87,6 +135,10 @@ class UserResponse(BaseModel):
     role: str
     phone: Optional[str] = None
     is_active: bool
+    is_verified: bool = False
+    phone_verified: bool = False
+    two_factor_enabled: bool = False
+    avatar_url: Optional[str] = None
     last_login: Optional[datetime] = None
     created_at: datetime
 
@@ -509,3 +561,4 @@ class PaginatedResponse(BaseModel):
 
 # Fix forward references
 TokenResponse.model_rebuild()
+LoginResponse.model_rebuild()

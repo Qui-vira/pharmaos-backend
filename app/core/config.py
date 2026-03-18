@@ -65,6 +65,26 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
 
+    # SMTP (email verification)
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: Optional[str] = None
+
+    # Google OAuth
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+
+    # SMS Providers (phone OTP)
+    TERMII_API_KEY: Optional[str] = None
+    TERMII_SENDER_ID: str = "PharmaOS"
+    AT_API_KEY: Optional[str] = None
+    AT_USERNAME: Optional[str] = None
+
+    # 2FA encryption key (for encrypting TOTP secrets at rest)
+    TWO_FACTOR_ENCRYPTION_KEY: Optional[str] = None
+
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
@@ -82,6 +102,10 @@ _optional_services = {
     "PAYSTACK_SECRET_KEY": "Paystack payments",
     "FLUTTERWAVE_SECRET_KEY": "Flutterwave payments",
     "S3_BUCKET": "S3 file storage",
+    "SMTP_HOST": "Email verification",
+    "GOOGLE_CLIENT_ID": "Google OAuth",
+    "TERMII_API_KEY": "Termii SMS OTP",
+    "TWO_FACTOR_ENCRYPTION_KEY": "2FA TOTP encryption",
 }
 for var, service in _optional_services.items():
     if getattr(settings, var, None) is None:
