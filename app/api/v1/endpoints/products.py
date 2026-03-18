@@ -25,7 +25,7 @@ from app.schemas.schemas import (
     InventoryResponse, InventoryAdjustRequest, LowStockItem,
     BatchCreateRequest, BatchResponse, ExpiryAlertResponse,
 )
-from app.utils.helpers import normalize_product_name, paginate
+from app.utils.helpers import normalize_product_name, paginate, sanitize_like
 from app.middleware.audit import log_audit
 
 router = APIRouter(tags=["Products & Inventory"])
@@ -49,10 +49,11 @@ async def list_products(
     query = select(Product).where(Product.is_active == True)
 
     if search:
+        safe_search = sanitize_like(search)
         query = query.where(
-            Product.name.ilike(f"%{search}%") |
-            Product.generic_name.ilike(f"%{search}%") |
-            Product.brand_name.ilike(f"%{search}%")
+            Product.name.ilike(f"%{safe_search}%") |
+            Product.generic_name.ilike(f"%{safe_search}%") |
+            Product.brand_name.ilike(f"%{safe_search}%")
         )
     if category:
         query = query.where(Product.category == category)
@@ -201,8 +202,9 @@ async def resolve_product_name(
             }
 
     # Try fuzzy match via LIKE on normalized name
+    safe_normalized = sanitize_like(normalized)
     fuzzy_result = await db.execute(
-        select(ProductAlias).where(ProductAlias.normalized_name.ilike(f"%{normalized}%")).limit(5)
+        select(ProductAlias).where(ProductAlias.normalized_name.ilike(f"%{safe_normalized}%")).limit(5)
     )
     suggestions = fuzzy_result.scalars().all()
 

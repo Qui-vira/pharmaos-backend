@@ -18,7 +18,7 @@ from app.schemas.schemas import (
     PatientCreateRequest, PatientResponse, PatientUpdateRequest,
     ReminderCreateRequest, ReminderResponse, ReminderUpdateRequest,
 )
-from app.utils.helpers import paginate
+from app.utils.helpers import paginate, sanitize_like
 from app.middleware.audit import log_audit
 
 router = APIRouter(tags=["Patients & Reminders"])
@@ -38,8 +38,9 @@ async def list_patients(
     query = select(Patient).where(Patient.org_id == current_user.org_id)
 
     if search:
+        safe_search = sanitize_like(search)
         query = query.where(
-            Patient.full_name.ilike(f"%{search}%") | Patient.phone.ilike(f"%{search}%")
+            Patient.full_name.ilike(f"%{safe_search}%") | Patient.phone.ilike(f"%{safe_search}%")
         )
 
     query = query.order_by(Patient.full_name)

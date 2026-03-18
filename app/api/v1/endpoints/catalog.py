@@ -25,7 +25,7 @@ from app.schemas.schemas import (
     SupplierProductResponse, PriceComparisonResult, ProductResponse,
 )
 from app.middleware.audit import log_audit
-from app.utils.helpers import paginate
+from app.utils.helpers import paginate, sanitize_like
 
 router = APIRouter(tags=["Catalog & Pricing"])
 
@@ -52,9 +52,10 @@ async def browse_catalog(
     )
 
     if search:
+        safe_search = sanitize_like(search)
         query = query.where(
-            Product.name.ilike(f"%{search}%") |
-            Product.generic_name.ilike(f"%{search}%")
+            Product.name.ilike(f"%{safe_search}%") |
+            Product.generic_name.ilike(f"%{safe_search}%")
         )
 
     # Filter to preferred suppliers only

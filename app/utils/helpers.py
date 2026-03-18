@@ -13,6 +13,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def sanitize_like(value: str) -> str:
+    """Escape special LIKE/ILIKE characters (%, _) in user input."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def generate_order_number() -> str:
     """Generate a human-readable order number: ORD-XXXXXX."""
     chars = string.ascii_uppercase + string.digits
