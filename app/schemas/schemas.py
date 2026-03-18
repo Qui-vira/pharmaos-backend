@@ -18,18 +18,18 @@ class RegisterRequest(BaseModel):
     org_name: str = Field(..., min_length=2, max_length=255)
     org_type: str = Field(..., pattern="^(pharmacy|distributor|wholesaler)$")
     admin_email: EmailStr
-    admin_password: str = Field(..., min_length=8)
-    admin_full_name: str = Field(..., min_length=2)
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    license_number: Optional[str] = None
+    admin_password: str = Field(..., min_length=8, max_length=128)
+    admin_full_name: str = Field(..., min_length=2, max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
+    address: Optional[str] = Field(None, max_length=500)
+    city: Optional[str] = Field(None, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    license_number: Optional[str] = Field(None, max_length=100)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -64,13 +64,13 @@ class OrgResponse(BaseModel):
 
 
 class OrgUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=2, max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
     email: Optional[EmailStr] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    license_number: Optional[str] = None
+    address: Optional[str] = Field(None, max_length=500)
+    city: Optional[str] = Field(None, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    license_number: Optional[str] = Field(None, max_length=100)
     settings: Optional[dict] = None
 
 
@@ -93,16 +93,16 @@ class UserResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=8)
-    full_name: str = Field(..., min_length=2)
-    role: str
-    phone: Optional[str] = None
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: str = Field(..., min_length=2, max_length=255)
+    role: str = Field(..., pattern="^(pharmacy_admin|cashier|pharmacist|distributor_admin|warehouse_staff|sales_rep)$")
+    phone: Optional[str] = Field(None, max_length=20)
 
 
 class UserUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
-    role: Optional[str] = None
-    phone: Optional[str] = None
+    full_name: Optional[str] = Field(None, min_length=2, max_length=255)
+    role: Optional[str] = Field(None, pattern="^(pharmacy_admin|cashier|pharmacist|distributor_admin|warehouse_staff|sales_rep)$")
+    phone: Optional[str] = Field(None, max_length=20)
     is_active: Optional[bool] = None
 
 
@@ -129,18 +129,18 @@ class ProductResponse(BaseModel):
 
 
 class ProductCreateRequest(BaseModel):
-    name: str = Field(..., min_length=2)
-    generic_name: Optional[str] = None
-    brand_name: Optional[str] = None
-    dosage_form: Optional[str] = None
-    strength: Optional[str] = None
-    manufacturer: Optional[str] = None
-    nafdac_number: Optional[str] = None
-    category: Optional[str] = None
+    name: str = Field(..., min_length=2, max_length=255)
+    generic_name: Optional[str] = Field(None, max_length=255)
+    brand_name: Optional[str] = Field(None, max_length=255)
+    dosage_form: Optional[str] = Field(None, max_length=100)
+    strength: Optional[str] = Field(None, max_length=100)
+    manufacturer: Optional[str] = Field(None, max_length=255)
+    nafdac_number: Optional[str] = Field(None, max_length=50)
+    category: Optional[str] = Field(None, max_length=100)
     requires_prescription: bool = False
     controlled_substance: bool = False
-    unit_of_measure: str = "pack"
-    reorder_threshold: int = 10
+    unit_of_measure: str = Field("pack", max_length=50)
+    reorder_threshold: int = Field(10, ge=0)
 
 
 class ProductUpdateRequest(BaseModel):
@@ -239,7 +239,7 @@ class ExpiryAlertResponse(BaseModel):
 class SaleItemInput(BaseModel):
     product_id: UUID
     quantity: int = Field(..., gt=0)
-    unit_price: Decimal
+    unit_price: Decimal = Field(..., gt=0)
     batch_id: Optional[UUID] = None
 
 
@@ -260,7 +260,7 @@ class SaleResponse(BaseModel):
     total_amount: Decimal
     payment_method: str
     sale_date: datetime
-    items: dict
+    items: list
     consultation_id: Optional[UUID] = None
 
 
@@ -278,15 +278,15 @@ class SalesAnalytics(BaseModel):
 class OrderItemInput(BaseModel):
     product_id: UUID
     quantity: int = Field(..., gt=0)
-    unit_price: Decimal
+    unit_price: Decimal = Field(..., gt=0)
 
 
 class OrderCreateRequest(BaseModel):
     seller_org_id: UUID
-    items: List[OrderItemInput]
-    channel: str = "web"
-    delivery_address: Optional[str] = None
-    notes: Optional[str] = None
+    items: List[OrderItemInput] = Field(..., min_length=1)
+    channel: str = Field("web", pattern="^(web|whatsapp|phone)$")
+    delivery_address: Optional[str] = Field(None, max_length=500)
+    notes: Optional[str] = Field(None, max_length=1000)
 
 
 class OrderItemResponse(BaseModel):
@@ -336,8 +336,8 @@ class SupplierProductCreateRequest(BaseModel):
 
 
 class SupplierProductUpdateRequest(BaseModel):
-    unit_price: Optional[Decimal] = None
-    quantity_available: Optional[int] = None
+    unit_price: Optional[Decimal] = Field(None, gt=0)
+    quantity_available: Optional[int] = Field(None, ge=0)
     is_published: Optional[bool] = None
 
 
@@ -363,10 +363,10 @@ class PriceComparisonResult(BaseModel):
 
 
 class PatientCreateRequest(BaseModel):
-    full_name: str = Field(..., min_length=2)
-    phone: str = Field(..., min_length=10)
+    full_name: str = Field(..., min_length=2, max_length=255)
+    phone: str = Field(..., min_length=10, max_length=20)
     date_of_birth: Optional[date] = None
-    gender: Optional[str] = None
+    gender: Optional[str] = Field(None, pattern="^(male|female|other)$")
     allergies: Optional[List[str]] = []
     chronic_conditions: Optional[List[str]] = []
     consent_given: bool = False
