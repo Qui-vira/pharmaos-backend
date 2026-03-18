@@ -489,6 +489,7 @@ class Patient(Base):
     __table_args__ = (
         Index("ix_patients_org_phone", "org_id", "phone"),
         UniqueConstraint("org_id", "phone", name="uq_patient_org_phone"),
+        UniqueConstraint("phone", name="uq_patient_phone_global"),
     )
 
 

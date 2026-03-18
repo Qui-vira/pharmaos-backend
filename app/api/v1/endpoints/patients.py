@@ -69,15 +69,23 @@ async def create_patient(
 ):
     """Register a new patient."""
 
-    # Check uniqueness by phone within org
+    # One-phone-one-pharmacy rule: check if phone is registered at ANY pharmacy
+    normalized_phone = payload.phone.strip().lstrip("+")
+    with_plus = f"+{normalized_phone}"
     existing = await db.execute(
         select(Patient).where(
-            Patient.org_id == current_user.org_id,
-            Patient.phone == payload.phone,
-        )
+            Patient.phone.in_([payload.phone, normalized_phone, with_plus])
+        ).limit(1)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Patient with this phone number already exists.")
+    existing_patient = existing.scalar_one_or_none()
+    if existing_patient:
+        if existing_patient.org_id == current_user.org_id:
+            raise HTTPException(status_code=400, detail="Patient with this phone number already exists.")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="This phone number is already registered at another pharmacy.",
+            )
 
     patient = Patient(
         org_id=current_user.org_id,
@@ -136,15 +144,24 @@ async def self_register_patient(
     if not re.match(r"^\+?\d{10,15}$", phone):
         raise HTTPException(status_code=400, detail="Invalid phone number format.")
 
-    # Check for duplicate (phone + org_id)
+    # One-phone-one-pharmacy rule: check if phone is registered at ANY pharmacy
+    normalized_phone = phone.strip().lstrip("+")
+    with_plus = f"+{normalized_phone}"
     existing = await db.execute(
-        select(Patient.id).where(
-            Patient.org_id == payload.org_id,
-            Patient.phone == phone,
-        )
+        select(Patient).where(
+            Patient.phone.in_([phone, normalized_phone, with_plus])
+        ).limit(1)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="You are already registered at this pharmacy.")
+    existing_patient = existing.scalar_one_or_none()
+    if existing_patient:
+        if existing_patient.org_id == payload.org_id:
+            raise HTTPException(status_code=400, detail="You are already registered at this pharmacy.")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="This phone number is already registered at another pharmacy. "
+                       "Each phone number can only be linked to one pharmacy.",
+            )
 
     patient = Patient(
         org_id=payload.org_id,

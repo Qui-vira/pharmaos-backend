@@ -211,7 +211,21 @@ async def route_inbound_message(
         except Exception:
             logger.exception("Failed to create consultation for patient=%s", patient.id)
     else:
-        logger.warning("Unregistered sender phone=%s — message ignored. Message: %r", phone, message[:100])
+        # Unregistered number — send registration guidance via WhatsApp
+        logger.warning("Unregistered sender phone=%s — sending registration link. Message: %r", phone, message[:100])
+        try:
+            from app.services.whatsapp import whatsapp_service
+            wa_phone = _normalize_phone(phone)
+            await whatsapp_service.send_text(
+                wa_phone,
+                "Welcome to PharmaOS! 👋\n\n"
+                "You are not yet registered with a pharmacy. "
+                "Please visit your pharmacy and scan their QR code to register, "
+                "or ask your pharmacist to register you.\n\n"
+                "Once registered, you can start a consultation here.",
+            )
+        except Exception:
+            logger.exception("Failed to send registration message to phone=%s", phone)
 
 
 async def handle_consultation_message(
