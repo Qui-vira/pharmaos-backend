@@ -186,36 +186,64 @@ async def revenue_forecast(
     Returns historical monthly revenue, projections, trend direction, and confidence.
     """
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=180)
 
-    # Monthly revenue aggregation
-    result = await db.execute(
-        select(
-            func.date_trunc("month", Sale.sale_date).label("month"),
-            func.sum(Sale.total_amount).label("revenue"),
+    def _default_response() -> dict[str, Any]:
+        """Return safe empty/default response."""
+        forecast = []
+        for i in range(1, months_ahead + 1):
+            future_month = (now + timedelta(days=30 * i)).strftime("%Y-%m")
+            forecast.append({"month": future_month, "projected_revenue": 0.0})
+        return {
+            "historical": [],
+            "forecast": forecast,
+            "trend": "stable",
+            "confidence": "low",
+        }
+
+    try:
+        cutoff = now - timedelta(days=180)
+
+        # Monthly revenue aggregation
+        result = await db.execute(
+            select(
+                func.date_trunc("month", Sale.sale_date).label("month"),
+                func.sum(Sale.total_amount).label("revenue"),
+            )
+            .where(Sale.org_id == org_id, Sale.sale_date >= cutoff)
+            .group_by(func.date_trunc("month", Sale.sale_date))
+            .order_by(func.date_trunc("month", Sale.sale_date))
         )
-        .where(Sale.org_id == org_id, Sale.sale_date >= cutoff)
-        .group_by(func.date_trunc("month", Sale.sale_date))
-        .order_by(func.date_trunc("month", Sale.sale_date))
-    )
-    rows = result.all()
+        rows = result.all()
+    except Exception:
+        logger.exception("Failed to query revenue data for org %s", org_id)
+        return _default_response()
+
+    if not rows:
+        return _default_response()
 
     historical = []
     for row in rows:
-        month_dt = row.month
-        if hasattr(month_dt, "strftime"):
-            month_str = month_dt.strftime("%Y-%m")
-        else:
-            month_str = str(month_dt)[:7]
+        try:
+            month_dt = row.month
+            if hasattr(month_dt, "strftime"):
+                month_str = month_dt.strftime("%Y-%m")
+            else:
+                month_str = str(month_dt)[:7]
+            rev = float(row.revenue) if row.revenue is not None else 0.0
+        except (TypeError, ValueError):
+            continue
         historical.append({
             "month": month_str,
-            "revenue": float(row.revenue or 0),
+            "revenue": rev,
         })
 
     n = len(historical)
+    if n == 0:
+        return _default_response()
+
     if n < 2:
-        # Not enough data for regression
-        avg_rev = historical[0]["revenue"] if n == 1 else 0
+        # Not enough data for regression — project flat from single month
+        avg_rev = float(historical[0]["revenue"])
         forecast = []
         for i in range(1, months_ahead + 1):
             future_month = (now + timedelta(days=30 * i)).strftime("%Y-%m")
@@ -230,7 +258,7 @@ async def revenue_forecast(
     # Simple linear regression: y = a + b*x
     # x = 0, 1, 2, ... (month index)
     x_vals = list(range(n))
-    y_vals = [h["revenue"] for h in historical]
+    y_vals = [float(h["revenue"]) for h in historical]
 
     x_mean = sum(x_vals) / n
     y_mean = sum(y_vals) / n
@@ -241,24 +269,24 @@ async def revenue_forecast(
     if denominator == 0:
         slope = 0.0
     else:
-        slope = numerator / denominator
-    intercept = y_mean - slope * x_mean
+        slope = float(numerator / denominator)
+    intercept = float(y_mean - slope * x_mean)
 
     # Project future months
     forecast = []
     for i in range(1, months_ahead + 1):
         x_future = n - 1 + i
-        projected = max(0, intercept + slope * x_future)
+        projected = max(0.0, intercept + slope * x_future)
         future_month = (now + timedelta(days=30 * i)).strftime("%Y-%m")
         forecast.append({
             "month": future_month,
-            "projected_revenue": round(projected, 2),
+            "projected_revenue": round(float(projected), 2),
         })
 
-    # Determine trend
-    if slope > y_mean * 0.02:
+    # Determine trend (guard against y_mean == 0)
+    if y_mean > 0 and slope > y_mean * 0.02:
         trend = "growing"
-    elif slope < -y_mean * 0.02:
+    elif y_mean > 0 and slope < -y_mean * 0.02:
         trend = "declining"
     else:
         trend = "stable"
