@@ -232,19 +232,81 @@ async def update_patient(
 
 # ─── Reminders ──────────────────────────────────────────────────────────────
 
+@router.get("/reminders/stats")
+async def reminder_stats(
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get reminder statistics for the current pharmacy."""
+    from sqlalchemy import func
+
+    org_id = current_user.org_id
+
+    # Total counts by status
+    status_counts = {}
+    for s in ReminderStatus:
+        result = await db.execute(
+            select(func.count(Reminder.id)).where(
+                Reminder.org_id == org_id,
+                Reminder.status == s,
+            )
+        )
+        status_counts[s.value] = result.scalar() or 0
+
+    # Total counts by type
+    type_counts = {}
+    for t in ReminderType:
+        result = await db.execute(
+            select(func.count(Reminder.id)).where(
+                Reminder.org_id == org_id,
+                Reminder.reminder_type == t,
+            )
+        )
+        type_counts[t.value] = result.scalar() or 0
+
+    # Due today (pending, scheduled_at <= end of today)
+    from datetime import timedelta
+    end_of_today = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59)
+    due_today_result = await db.execute(
+        select(func.count(Reminder.id)).where(
+            Reminder.org_id == org_id,
+            Reminder.status == ReminderStatus.pending,
+            Reminder.scheduled_at <= end_of_today,
+        )
+    )
+    due_today = due_today_result.scalar() or 0
+
+    total = sum(status_counts.values())
+
+    return {
+        "total": total,
+        "due_today": due_today,
+        "by_status": status_counts,
+        "by_type": type_counts,
+    }
+
+
 @router.get("/reminders", response_model=dict)
 async def list_reminders(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None, alias="status"),
+    type_filter: Optional[str] = Query(None, alias="type"),
+    patient_id: Optional[UUID] = Query(None),
     current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
     db: AsyncSession = Depends(get_db),
 ):
-    """List reminders for the current pharmacy."""
+    """List reminders for the current pharmacy with filtering."""
     query = select(Reminder).where(Reminder.org_id == current_user.org_id)
 
     if status_filter:
         query = query.where(Reminder.status == ReminderStatus(status_filter))
+
+    if type_filter:
+        query = query.where(Reminder.reminder_type == ReminderType(type_filter))
+
+    if patient_id:
+        query = query.where(Reminder.patient_id == patient_id)
 
     query = query.order_by(Reminder.scheduled_at.desc())
 

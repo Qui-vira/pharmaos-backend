@@ -473,7 +473,7 @@ class PatientSelfRegisterRequest(BaseModel):
 
 class ReminderCreateRequest(BaseModel):
     patient_id: UUID
-    reminder_type: str = Field(..., pattern="^(refill|adherence|follow_up|pickup)$")
+    reminder_type: str = Field(..., pattern="^(refill|adherence|follow_up|pickup|abandoned)$")
     product_id: Optional[UUID] = None
     scheduled_at: datetime
     recurrence_rule: Optional[str] = None
