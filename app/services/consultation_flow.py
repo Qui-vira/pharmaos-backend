@@ -281,8 +281,14 @@ async def handle_awaiting_payment_message(
     if button_id == "pay_consultation_fee":
         # TODO: Replace with actual Paystack/Flutterwave payment link generation
         payment_url = "https://paystack.com/pay/pharmaos-consultation-fee"
-        reply = f"Pay your consultation fee (\u20A6{fee:,.2f}) here:\n{payment_url}"
-        await whatsapp_service.send_text(wa_phone, reply)
+        reply = f"Pay your consultation fee (\u20A6{fee:,.2f}) here:\n{payment_url}\n\nAfter payment, tap 'I Have Paid' below."
+        await whatsapp_service.send_button_message(
+            to=wa_phone,
+            body=reply,
+            buttons=[
+                {"id": "confirm_consultation_payment", "title": "I Have Paid"},
+            ],
+        )
         _record_bot_msg(db, consultation.id, reply)
 
     elif button_id == "confirm_consultation_payment" or message.strip().lower() in ("paid", "done", "confirmed"):
@@ -291,7 +297,7 @@ async def handle_awaiting_payment_message(
         consultation.status = ConsultationStatus.pending_review
 
         reply = (
-            "Payment received! A pharmacist is now reviewing your case. "
+            "Payment confirmed! \u2705 A pharmacist is now reviewing your case. "
             "You will receive a response shortly."
         )
         await whatsapp_service.send_text(wa_phone, reply)
@@ -302,13 +308,14 @@ async def handle_awaiting_payment_message(
         # Remind them to pay
         reply = (
             f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist can review your case.\n\n"
-            f"Please tap 'Pay Now' below to proceed."
+            f"Tap 'Pay Now' to proceed."
         )
         await whatsapp_service.send_button_message(
             to=wa_phone,
             body=reply,
             buttons=[
                 {"id": "pay_consultation_fee", "title": "Pay Now"},
+                {"id": "confirm_consultation_payment", "title": "I Have Paid"},
             ],
         )
         _record_bot_msg(db, consultation.id, reply)
@@ -507,19 +514,34 @@ async def send_payment_confirmed_delivery_selection(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+DEFAULT_CONSULTATION_FEE = 1500.0  # ₦1,500 platform default
+
+
 async def _get_consultation_fee(db: AsyncSession, org_id) -> float:
-    """Get the consultation fee from pharmacy settings. Returns 0 if not set."""
+    """Get the consultation fee from pharmacy settings.
+
+    Returns the fee in Naira.  If the pharmacy has NOT configured a fee at all
+    (settings is NULL, empty, or missing the key), we fall back to the
+    platform default (₦1,500).  A pharmacy can explicitly set the fee to 0
+    to disable the payment gate.
+    """
     result = await db.execute(
         select(Organization.settings).where(Organization.id == org_id)
     )
     row = result.one_or_none()
-    if row and row.settings:
-        fee = row.settings.get("consultation_fee", 0)
+
+    if row and row.settings and "consultation_fee" in row.settings:
+        # Pharmacy has explicitly configured a fee (may be 0 to disable)
         try:
-            return float(fee)
+            fee = float(row.settings["consultation_fee"])
+            logger.info("Consultation fee for org=%s: ₦%.2f (from settings)", org_id, fee)
+            return fee
         except (TypeError, ValueError):
-            return 0.0
-    return 0.0
+            pass
+
+    # No explicit setting → use platform default
+    logger.info("Consultation fee for org=%s: ₦%.2f (platform default)", org_id, DEFAULT_CONSULTATION_FEE)
+    return DEFAULT_CONSULTATION_FEE
 
 
 async def _finish_intake(
@@ -581,13 +603,14 @@ async def _finish_intake(
         reply = (
             f"Thank you for the information!\n\n"
             f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist reviews your case.\n\n"
-            f"Tap below to pay."
+            f"Tap 'Pay Now' to proceed with payment."
         )
         await whatsapp_service.send_button_message(
             to=wa_phone,
             body=reply,
             buttons=[
                 {"id": "pay_consultation_fee", "title": "Pay Now"},
+                {"id": "confirm_consultation_payment", "title": "I Have Paid"},
             ],
         )
         _record_bot_msg(db, consultation.id, reply)
