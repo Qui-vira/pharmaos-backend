@@ -84,6 +84,7 @@ async def handle_whatsapp_message(
         from_number = message.get("from", "")
         msg_type = message.get("type", "")
         msg_body = ""
+        button_id = None
 
         if msg_type == "text":
             msg_body = message.get("text", {}).get("body", "")
@@ -92,17 +93,20 @@ async def handle_whatsapp_message(
             interactive = message.get("interactive", {})
             if "button_reply" in interactive:
                 msg_body = interactive["button_reply"].get("title", "")
+                button_id = interactive["button_reply"].get("id", "")
             elif "list_reply" in interactive:
                 msg_body = interactive["list_reply"].get("title", "")
+                button_id = interactive["list_reply"].get("id", "")
 
-        logger.info("WhatsApp webhook: from=%s type=%s body=%r", from_number, msg_type, msg_body[:200] if msg_body else "")
+        logger.info("WhatsApp webhook: from=%s type=%s body=%r button_id=%s",
+                     from_number, msg_type, msg_body[:200] if msg_body else "", button_id)
 
         if not msg_body:
             logger.info("Skipping message from %s: empty body (type=%s)", from_number, msg_type)
             continue
 
         # Route message
-        await route_inbound_message(db, from_number, msg_body)
+        await route_inbound_message(db, from_number, msg_body, button_id=button_id)
 
     return {"status": "ok"}
 
@@ -133,7 +137,9 @@ async def _find_patient_by_phone(db: AsyncSession, phone: str) -> Optional["Pati
     return result.scalar_one_or_none()
 
 
-async def route_inbound_message(db: AsyncSession, phone: str, message: str):
+async def route_inbound_message(
+    db: AsyncSession, phone: str, message: str, button_id: str = None,
+):
     """
     Route an inbound WhatsApp message to the correct handler.
 
@@ -143,7 +149,7 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
     3. Check for ordering keywords → route to order handler
     4. Default → start new consultation
     """
-    logger.info("Routing inbound message: phone=%s message=%r", phone, message[:200])
+    logger.info("Routing inbound message: phone=%s message=%r button_id=%s", phone, message[:200], button_id)
 
     message_lower = message.strip().lower()
 
@@ -162,13 +168,16 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
                        phone, _normalize_phone(phone), _normalize_phone(phone))
 
     if patient:
-        # Check for active consultation
+        # Check for active consultation (include pending_review/pharmacist_reviewing
+        # so "ask_question" messages are routed correctly)
         consult_result = await db.execute(
             select(Consultation).where(
                 Consultation.patient_id == patient.id,
                 Consultation.status.in_([
                     ConsultationStatus.intake,
                     ConsultationStatus.ai_processing,
+                    ConsultationStatus.pending_review,
+                    ConsultationStatus.pharmacist_reviewing,
                     ConsultationStatus.approved,
                 ]),
             ).order_by(Consultation.created_at.desc()).limit(1)
@@ -178,14 +187,13 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
         if active_consult:
             logger.info("Routing to existing consultation: id=%s status=%s patient=%s",
                         active_consult.id, active_consult.status.value, patient.id)
-            await handle_consultation_message(db, patient, active_consult, message)
+            await handle_consultation_message(db, patient, active_consult, message, button_id=button_id)
             return
 
-    # Check for reminder responses
+    # Check for reminder responses (only if no active consultation)
     if message_lower in ("pickup", "delivery", "stop"):
         logger.info("Reminder response detected: %s from phone=%s", message_lower, phone)
         # TODO: Handle reminder response via Celery task
-        # handle_reminder_response.delay(phone, message_lower)
         return
 
     # Check for order keywords
@@ -193,7 +201,6 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
     if any(kw in message_lower for kw in order_keywords):
         logger.info("Order keyword detected in message from phone=%s", phone)
         # TODO: Trigger order intent processing via Celery
-        # process_whatsapp_order.delay(phone, message)
         return
 
     # Default: Start new consultation if patient exists
@@ -212,25 +219,14 @@ async def handle_consultation_message(
     patient: "Patient",
     consultation: "Consultation",
     message: str,
+    button_id: str = None,
 ):
     """Handle a message within an active consultation."""
+    from app.services.consultation_flow import (
+        handle_intake_message, handle_approved_message,
+    )
 
-    # If consultation is approved, handle customer response (PICKUP/DELIVERY)
-    if consultation.status == ConsultationStatus.approved:
-        msg_lower = message.strip().lower()
-        if msg_lower in ("pickup", "delivery"):
-            logger.info("Completing consultation=%s via %s response from patient=%s",
-                        consultation.id, msg_lower, patient.id)
-            # TODO: Create order from consultation
-            # create_order_from_consultation.delay(consultation.id, msg_lower)
-            consultation.status = ConsultationStatus.completed
-            await db.flush()
-        else:
-            logger.info("Ignoring non-action message on approved consultation=%s: %r",
-                        consultation.id, message[:100])
-        return
-
-    # Record customer message
+    # Record customer message first
     try:
         msg = ConsultationMessage(
             consultation_id=consultation.id,
@@ -245,8 +241,34 @@ async def handle_consultation_message(
         logger.exception("Failed to record message on consultation=%s", consultation.id)
         raise
 
-    # TODO: Celery task to process with AI and send follow-up question
-    # process_consultation_ai.delay(consultation.id)
+    # Route by consultation status
+    try:
+        if consultation.status in (ConsultationStatus.intake, ConsultationStatus.ai_processing):
+            await handle_intake_message(db, patient, consultation, message, button_id=button_id)
+
+        elif consultation.status == ConsultationStatus.approved:
+            await handle_approved_message(db, patient, consultation, message, button_id=button_id)
+
+        elif consultation.status in (ConsultationStatus.pending_review, ConsultationStatus.pharmacist_reviewing):
+            # Patient sent a message while waiting for pharmacist — it's recorded above.
+            # Acknowledge so they know we got it.
+            from app.services.whatsapp import whatsapp_service
+            wa_phone = patient.phone.strip().lstrip("+")
+            await whatsapp_service.send_text(
+                wa_phone,
+                "Your message has been received. A pharmacist is currently reviewing your case.",
+            )
+            bot_msg = ConsultationMessage(
+                consultation_id=consultation.id,
+                sender_type=MessageSender.ai,
+                message="Your message has been received. A pharmacist is currently reviewing your case.",
+            )
+            db.add(bot_msg)
+            await db.flush()
+
+    except Exception:
+        logger.exception("Error processing consultation message: consultation=%s status=%s",
+                         consultation.id, consultation.status.value)
 
 
 async def start_new_consultation(
@@ -255,6 +277,8 @@ async def start_new_consultation(
     initial_message: str,
 ):
     """Start a new consultation from a WhatsApp message."""
+    from app.services.consultation_flow import handle_new_consultation
+
     consultation = Consultation(
         org_id=patient.org_id,
         patient_id=patient.id,
@@ -276,8 +300,11 @@ async def start_new_consultation(
 
     logger.info("Initial message recorded: consultation=%s msg_id=%s", consultation.id, msg.id)
 
-    # TODO: Celery task to start AI intake
-    # start_ai_intake.delay(consultation.id)
+    # Send the greeting and first intake question
+    try:
+        await handle_new_consultation(db, patient, consultation, initial_message)
+    except Exception:
+        logger.exception("Failed to send intake greeting for consultation=%s", consultation.id)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

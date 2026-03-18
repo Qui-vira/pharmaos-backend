@@ -21,7 +21,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-WHATSAPP_API_BASE = "https://graph.facebook.com/v18.0"
+WHATSAPP_API_BASE = "https://graph.facebook.com/v23.0"
 
 
 class WhatsAppService:
@@ -206,26 +206,26 @@ class WhatsAppService:
         return await self.send_text(to=to, message=question)
 
     async def send_consultation_response(
-        self, to: str, patient_name: str, drug_plan_text: str, total_price: float,
+        self, to: str, patient_name: str, total_price: float,
     ) -> dict:
         """
         Send the pharmacist-approved consultation response.
         THIS ONLY FIRES AFTER pharmacist_actions.is_approved = True.
+
+        COMPLIANCE: Sends ONLY the total price. Does NOT include drug names.
         """
         body = (
             f"Hello {patient_name},\n\n"
-            f"Based on your consultation, the pharmacist has recommended:\n\n"
-            f"{drug_plan_text}\n\n"
-            f"Total: ₦{total_price:,.2f}\n\n"
-            f"How would you like to receive your medication?"
+            f"Your prescription is ready.\n"
+            f"Total: \u20A6{total_price:,.2f}\n\n"
+            f"Tap below to proceed."
         )
         return await self.send_button_message(
             to=to,
             body=body,
-            header="🏥 Pharmacist Recommendation",
             buttons=[
-                {"id": "consult_pickup", "title": "PICKUP"},
-                {"id": "consult_delivery", "title": "DELIVERY"},
+                {"id": "pay_now", "title": "Pay Now"},
+                {"id": "ask_question", "title": "Ask a Question"},
             ],
         )
 

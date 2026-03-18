@@ -173,6 +173,17 @@ async def send_pharmacist_message(
         consultation.assigned_pharmacist_id = current_user.user_id
 
     await db.flush()
+
+    # Forward pharmacist message to patient on WhatsApp
+    try:
+        from app.services.consultation_flow import send_pharmacist_reply_to_whatsapp
+        await send_pharmacist_reply_to_whatsapp(db, consultation, message_text)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to forward pharmacist message to WhatsApp for consultation=%s", consultation_id
+        )
+
     return ConsultationResponse.model_validate(consultation)
 
 
@@ -220,20 +231,21 @@ async def approve_consultation(
     action.approved_at = datetime.now(timezone.utc)
     consultation.status = ConsultationStatus.approved
 
-    # Add the pharmacist-approved message to the conversation
-    # This is what gets sent to the customer via WhatsApp
+    # Add the pharmacist-approved message to the dashboard conversation history.
+    # NOTE: Drug names are shown ONLY in the dashboard, never sent to patient via WhatsApp.
     drug_lines = []
     for drug in action.drug_plan:
-        name = drug.get("product_name", "Medication")
+        name = drug.get("drug_name") or drug.get("product_name", "Medication")
         dosage = drug.get("dosage", "")
         instructions = drug.get("instructions", "")
         drug_lines.append(f"- {name} {dosage}: {instructions}")
 
+    newline = "\n"
     response_message = (
-        f"Based on your consultation, the pharmacist has recommended:\n\n"
-        f"{'chr(10)'.join(drug_lines)}\n\n"
-        f"Total: ₦{action.total_price:,.2f}\n\n"
-        f"Reply PICKUP to collect at the pharmacy, or DELIVERY for home delivery."
+        f"Prescription approved.\n\n"
+        f"{newline.join(drug_lines)}\n\n"
+        f"Total: \u20A6{action.total_price:,.2f}\n\n"
+        f"Sent to patient (price only, no drug names)."
     )
 
     msg = ConsultationMessage(
@@ -248,7 +260,14 @@ async def approve_consultation(
     )
     await db.flush()
 
-    # TODO: Celery task to actually send WhatsApp message to the customer
-    # send_whatsapp_consultation_response.delay(consultation_id)
+    # Send prescription price to patient via WhatsApp (no drug names — compliance)
+    try:
+        from app.services.consultation_flow import send_prescription_to_patient
+        await send_prescription_to_patient(db, consultation)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to send prescription to WhatsApp for consultation=%s", consultation_id
+        )
 
     return ConsultationResponse.model_validate(consultation)
