@@ -95,13 +95,42 @@ async def handle_whatsapp_message(
             elif "list_reply" in interactive:
                 msg_body = interactive["list_reply"].get("title", "")
 
+        logger.info("WhatsApp webhook: from=%s type=%s body=%r", from_number, msg_type, msg_body[:200] if msg_body else "")
+
         if not msg_body:
+            logger.info("Skipping message from %s: empty body (type=%s)", from_number, msg_type)
             continue
 
         # Route message
         await route_inbound_message(db, from_number, msg_body)
 
     return {"status": "ok"}
+
+
+def _normalize_phone(phone: str) -> str:
+    """
+    Normalize phone number for comparison.
+    WhatsApp sends '2347065092434', patients may be stored as '+2347065092434'.
+    Strip leading '+' and any non-digit characters so both formats match.
+    """
+    return phone.strip().lstrip("+").strip()
+
+
+async def _find_patient_by_phone(db: AsyncSession, phone: str) -> Optional["Patient"]:
+    """
+    Find a patient by phone, handling format mismatches.
+    Tries exact match first, then normalized variants (with/without '+' prefix).
+    """
+    normalized = _normalize_phone(phone)
+    with_plus = f"+{normalized}"
+
+    # Search for both formats in one query
+    result = await db.execute(
+        select(Patient).where(
+            Patient.phone.in_([normalized, with_plus, phone])
+        ).limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def route_inbound_message(db: AsyncSession, phone: str, message: str):
@@ -114,13 +143,23 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
     3. Check for ordering keywords → route to order handler
     4. Default → start new consultation
     """
+    logger.info("Routing inbound message: phone=%s message=%r", phone, message[:200])
+
     message_lower = message.strip().lower()
 
-    # Find patient across all pharmacies (by phone)
-    patient_result = await db.execute(
-        select(Patient).where(Patient.phone == phone).limit(1)
-    )
-    patient = patient_result.scalar_one_or_none()
+    # Find patient across all pharmacies (by phone) — handles +/no-+ mismatch
+    try:
+        patient = await _find_patient_by_phone(db, phone)
+    except Exception:
+        logger.exception("Error looking up patient for phone=%s", phone)
+        patient = None
+
+    if patient:
+        logger.info("Patient found: id=%s name=%s org=%s (stored_phone=%s, incoming=%s)",
+                     patient.id, patient.full_name, patient.org_id, patient.phone, phone)
+    else:
+        logger.warning("No patient found for phone=%s (tried: %s, +%s)",
+                       phone, _normalize_phone(phone), _normalize_phone(phone))
 
     if patient:
         # Check for active consultation
@@ -137,11 +176,14 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
         active_consult = consult_result.scalar_one_or_none()
 
         if active_consult:
+            logger.info("Routing to existing consultation: id=%s status=%s patient=%s",
+                        active_consult.id, active_consult.status.value, patient.id)
             await handle_consultation_message(db, patient, active_consult, message)
             return
 
     # Check for reminder responses
     if message_lower in ("pickup", "delivery", "stop"):
+        logger.info("Reminder response detected: %s from phone=%s", message_lower, phone)
         # TODO: Handle reminder response via Celery task
         # handle_reminder_response.delay(phone, message_lower)
         return
@@ -149,16 +191,20 @@ async def route_inbound_message(db: AsyncSession, phone: str, message: str):
     # Check for order keywords
     order_keywords = ["order", "need", "buy", "reorder", "i need", "i want"]
     if any(kw in message_lower for kw in order_keywords):
+        logger.info("Order keyword detected in message from phone=%s", phone)
         # TODO: Trigger order intent processing via Celery
         # process_whatsapp_order.delay(phone, message)
         return
 
     # Default: Start new consultation if patient exists
     if patient:
-        await start_new_consultation(db, patient, message)
+        logger.info("Starting new consultation for patient=%s org=%s", patient.id, patient.org_id)
+        try:
+            await start_new_consultation(db, patient, message)
+        except Exception:
+            logger.exception("Failed to create consultation for patient=%s", patient.id)
     else:
-        # Unknown sender — could auto-register or ask for pharmacy association
-        pass
+        logger.warning("Unregistered sender phone=%s — message ignored. Message: %r", phone, message[:100])
 
 
 async def handle_consultation_message(
@@ -173,20 +219,31 @@ async def handle_consultation_message(
     if consultation.status == ConsultationStatus.approved:
         msg_lower = message.strip().lower()
         if msg_lower in ("pickup", "delivery"):
+            logger.info("Completing consultation=%s via %s response from patient=%s",
+                        consultation.id, msg_lower, patient.id)
             # TODO: Create order from consultation
             # create_order_from_consultation.delay(consultation.id, msg_lower)
             consultation.status = ConsultationStatus.completed
             await db.flush()
+        else:
+            logger.info("Ignoring non-action message on approved consultation=%s: %r",
+                        consultation.id, message[:100])
         return
 
     # Record customer message
-    msg = ConsultationMessage(
-        consultation_id=consultation.id,
-        sender_type=MessageSender.customer,
-        message=message,
-    )
-    db.add(msg)
-    await db.flush()
+    try:
+        msg = ConsultationMessage(
+            consultation_id=consultation.id,
+            sender_type=MessageSender.customer,
+            message=message,
+        )
+        db.add(msg)
+        await db.flush()
+        logger.info("Recorded message on consultation=%s from patient=%s (msg_id=%s)",
+                     consultation.id, patient.id, msg.id)
+    except Exception:
+        logger.exception("Failed to record message on consultation=%s", consultation.id)
+        raise
 
     # TODO: Celery task to process with AI and send follow-up question
     # process_consultation_ai.delay(consultation.id)
@@ -206,6 +263,8 @@ async def start_new_consultation(
     db.add(consultation)
     await db.flush()
 
+    logger.info("Consultation created: id=%s patient=%s org=%s", consultation.id, patient.id, patient.org_id)
+
     # Record initial message
     msg = ConsultationMessage(
         consultation_id=consultation.id,
@@ -214,6 +273,8 @@ async def start_new_consultation(
     )
     db.add(msg)
     await db.flush()
+
+    logger.info("Initial message recorded: consultation=%s msg_id=%s", consultation.id, msg.id)
 
     # TODO: Celery task to start AI intake
     # start_ai_intake.delay(consultation.id)
