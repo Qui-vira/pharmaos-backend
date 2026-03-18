@@ -33,15 +33,7 @@ async def record_sale(
     items_data = []
 
     for item in payload.items:
-        # Verify product exists in org
-        prod_result = await db.execute(
-            select(Product).where(Product.id == item.product_id, Product.org_id == current_user.org_id)
-        )
-        product = prod_result.scalar_one_or_none()
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found.")
-
-        # Check inventory
+        # Verify product exists in org inventory and has enough stock
         inv_result = await db.execute(
             select(Inventory).where(
                 Inventory.product_id == item.product_id,
@@ -49,11 +41,19 @@ async def record_sale(
             )
         )
         inv = inv_result.scalar_one_or_none()
-        if not inv or inv.quantity_on_hand < item.quantity:
+        if not inv:
+            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in your inventory.")
+        if inv.quantity_on_hand < item.quantity:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient stock for {product.name}. Available: {inv.quantity_on_hand if inv else 0}",
+                detail=f"Insufficient stock for product {item.product_id}. Available: {inv.quantity_on_hand}",
             )
+
+        # Get global product name for sale record
+        prod_result = await db.execute(
+            select(Product).where(Product.id == item.product_id)
+        )
+        product = prod_result.scalar_one_or_none()
 
         # Deduct stock
         inv.quantity_on_hand -= item.quantity
@@ -63,7 +63,7 @@ async def record_sale(
 
         items_data.append({
             "product_id": str(item.product_id),
-            "product_name": product.name,
+            "product_name": product.name if product else "Unknown",
             "quantity": item.quantity,
             "unit_price": float(item.unit_price),
             "line_total": float(line_total),
