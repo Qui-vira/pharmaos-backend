@@ -85,7 +85,7 @@ async def get_consultation(
 async def submit_pharmacist_action(
     consultation_id: UUID,
     payload: PharmacistActionRequest,
-    current_user: TokenData = Depends(require_roles("pharmacist")),
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -195,7 +195,7 @@ async def send_pharmacist_message(
 @router.post("/{consultation_id}/approve", response_model=ConsultationResponse)
 async def approve_consultation(
     consultation_id: UUID,
-    current_user: TokenData = Depends(require_roles("pharmacist")),
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
     db: AsyncSession = Depends(get_db),
 ):
     """
