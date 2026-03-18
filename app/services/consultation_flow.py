@@ -18,12 +18,14 @@ COMPLIANCE:
   - Human-in-the-loop: pharmacist must approve every prescription.
 """
 
+import copy
 import json
 import logging
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.models import (
     Consultation, ConsultationMessage, ConsultationStatus,
@@ -51,16 +53,19 @@ INTAKE_STEPS = [
 
 
 def _get_intake_state(consultation: Consultation) -> dict:
-    """Read the intake tracking dict from the JSONB field."""
+    """Read the intake tracking dict from the JSONB field.
+    Returns a COPY so in-place mutations don't alias the ORM attribute."""
     data = consultation.ai_questions_asked
     if isinstance(data, dict) and "intake_step" in data:
-        return data
+        return copy.deepcopy(data)
     return {"intake_step": "greeting"}
 
 
 def _set_intake_state(consultation: Consultation, state: dict):
-    """Write the intake tracking dict back."""
+    """Write the intake tracking dict back.
+    Uses flag_modified so SQLAlchemy always detects the JSONB change."""
     consultation.ai_questions_asked = state
+    flag_modified(consultation, "ai_questions_asked")
 
 
 def _normalize_phone_for_wa(phone: str) -> str:
@@ -132,8 +137,11 @@ async def handle_intake_message(
     state = _get_intake_state(consultation)
     step = state.get("intake_step", "greeting")
 
-    logger.info("Intake step=%s for consultation=%s message=%r button_id=%s",
-                step, consultation.id, message[:100], button_id)
+    logger.info(
+        "INTAKE: step=%s consultation=%s message=%r button_id=%s raw_state=%s",
+        step, consultation.id, message[:100], button_id,
+        json.dumps(state) if state else "None",
+    )
 
     if step == "greeting":
         # Shouldn't normally reach here (handle_new_consultation sends greeting)
@@ -146,6 +154,7 @@ async def handle_intake_message(
         state["symptoms"] = message
         state["intake_step"] = "duration"
         _set_intake_state(consultation, state)
+        logger.info("INTAKE TRANSITION: symptoms → duration for consultation=%s", consultation.id)
 
         # Ask duration with buttons
         reply = "How long have you had these symptoms?"
@@ -161,15 +170,19 @@ async def handle_intake_message(
         _record_bot_msg(db, consultation.id, reply)
 
     elif step == "duration":
-        # Patient chose duration
+        # Patient chose duration (button or text)
         duration_map = {
             "dur_less3": "Less than 3 days",
             "dur_3to7": "3-7 days",
             "dur_more7": "More than a week",
         }
-        state["duration"] = duration_map.get(button_id, message)
+        resolved_duration = duration_map.get(button_id, message)
+        logger.info("INTAKE DURATION: button_id=%r resolved=%r for consultation=%s",
+                     button_id, resolved_duration, consultation.id)
+        state["duration"] = resolved_duration
         state["intake_step"] = "medications_ask"
         _set_intake_state(consultation, state)
+        logger.info("INTAKE TRANSITION: duration → medications_ask for consultation=%s", consultation.id)
 
         reply = "Are you currently taking any medication?"
         await whatsapp_service.send_button_message(

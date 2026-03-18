@@ -239,10 +239,25 @@ async def route_inbound_message(
         active_consult = consult_result.scalar_one_or_none()
 
         if active_consult:
-            logger.info("Routing to existing consultation: id=%s status=%s patient=%s",
-                        active_consult.id, active_consult.status.value, patient.id)
-            await handle_consultation_message(db, patient, active_consult, message, button_id=button_id)
-            return
+            # Cancel stale intake consultations (>2 hours old with no progress)
+            # so they don't trap new messages from the patient
+            from datetime import datetime, timedelta, timezone as tz
+            if (
+                active_consult.status in (ConsultationStatus.intake, ConsultationStatus.ai_processing)
+                and active_consult.updated_at < datetime.now(tz.utc) - timedelta(hours=2)
+            ):
+                logger.warning(
+                    "Cancelling stale consultation: id=%s status=%s updated_at=%s (>2h old)",
+                    active_consult.id, active_consult.status.value, active_consult.updated_at,
+                )
+                active_consult.status = ConsultationStatus.cancelled
+                await db.flush()
+                # Fall through to create a new consultation below
+            else:
+                logger.info("Routing to existing consultation: id=%s status=%s patient=%s",
+                            active_consult.id, active_consult.status.value, patient.id)
+                await handle_consultation_message(db, patient, active_consult, message, button_id=button_id)
+                return
 
     # Check for reminder responses (only if no active consultation)
     if message_lower in ("pickup", "delivery", "stop"):
