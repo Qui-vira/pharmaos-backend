@@ -28,6 +28,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 
+# TODO: Remove this debug endpoint once WhatsApp sending is confirmed working
+@router.get("/test-wa-send")
+async def test_wa_send():
+    """
+    DEBUG ENDPOINT: Manually test WhatsApp send function.
+    Reads env vars, logs credentials (masked), sends a test message,
+    returns the full WhatsApp API response.
+
+    TODO: Remove this endpoint before production launch.
+    """
+    from app.services.whatsapp import whatsapp_service, WHATSAPP_API_BASE
+
+    phone_id = whatsapp_service.phone_number_id or ""
+    token = whatsapp_service.access_token or ""
+    test_number = "2347065092434"
+
+    logger.info(
+        "TEST_WA_SEND: phone_number_id=%s token_len=%d token_prefix=%s configured=%s api=%s",
+        phone_id if phone_id else "MISSING",
+        len(token),
+        token[:6] + "..." if token else "NONE",
+        whatsapp_service.is_configured,
+        WHATSAPP_API_BASE,
+    )
+
+    if not whatsapp_service.is_configured:
+        return {
+            "error": "WhatsApp not configured",
+            "phone_number_id": phone_id if phone_id else "MISSING",
+            "access_token": "SET" if token else "MISSING",
+            "token_len": len(token),
+        }
+
+    result = await whatsapp_service.send_text(test_number, "Test from PharmaOS")
+
+    logger.info("TEST_WA_SEND RESULT: %s", result)
+
+    return {
+        "phone_number_id": phone_id,
+        "token_prefix": token[:6] + "..." if token else "NONE",
+        "token_len": len(token),
+        "api_base": WHATSAPP_API_BASE,
+        "test_number": test_number,
+        "result": result,
+    }
+
+
 @router.get("/whatsapp")
 async def verify_whatsapp_webhook(
     mode: str = Query(None, alias="hub.mode"),
@@ -58,6 +105,8 @@ async def handle_whatsapp_message(
     """
     body = await request.body()
 
+    logger.info("WEBHOOK RECEIVED: POST /webhooks/whatsapp body_len=%d", len(body))
+
     # Verify webhook signature if app_secret is configured
     if settings.WHATSAPP_APP_SECRET:
         signature = request.headers.get("x-hub-signature-256", "")
@@ -70,6 +119,7 @@ async def handle_whatsapp_message(
             raise HTTPException(status_code=403, detail="Invalid signature.")
 
     data = json.loads(body)
+    logger.info("WEBHOOK PARSED: keys=%s", list(data.keys()))
 
     # Extract message data from WhatsApp payload
     try:
@@ -77,7 +127,10 @@ async def handle_whatsapp_message(
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
         messages = value.get("messages", [])
+        logger.info("WEBHOOK MESSAGES: count=%d statuses=%s",
+                     len(messages), "yes" if value.get("statuses") else "no")
     except (IndexError, KeyError):
+        logger.warning("WEBHOOK: failed to extract messages from payload")
         return {"status": "ok"}
 
     for message in messages:

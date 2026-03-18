@@ -5,6 +5,7 @@ FastAPI application with middleware, CORS, and route mounting.
 
 import asyncio
 import logging
+import sys
 import traceback
 from contextlib import asynccontextmanager
 
@@ -13,12 +14,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+# ─── LOGGING SETUP — MUST be before any other app imports ─────────────────────
+# Force root logger to INFO so all logger.info() calls are visible in Railway.
+# Without this, Python defaults to WARNING and drops all INFO/DEBUG lines.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    stream=sys.stdout,  # Railway captures stdout
+    force=True,  # Override any existing root logger config
+)
+# Also force uvicorn's loggers to INFO
+for _uv_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_uv_logger_name).setLevel(logging.INFO)
+
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api.v1.router import api_router
 from app.middleware.rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
+logger.info("APP_STARTUP: logging configured at INFO level, output to stdout")
 
 # Background reminder scheduler task handle
 _reminder_task: asyncio.Task = None
@@ -55,6 +70,21 @@ async def lifespan(app: FastAPI):
     # Startup: Create tables if they don't exist (dev only — use Alembic in production)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Re-emit WhatsApp diagnostic now that logging is properly configured.
+    # The module-level WA_INIT in whatsapp.py fires at import time, which may be
+    # before basicConfig runs. This ensures it shows up in Railway logs.
+    from app.services.whatsapp import whatsapp_service, WHATSAPP_API_BASE
+    _phone_id = whatsapp_service.phone_number_id or ""
+    _token = whatsapp_service.access_token or ""
+    logger.info(
+        "WA_INIT (startup): configured=%s phone_number_id=%s token_len=%d token_prefix=%s api=%s",
+        whatsapp_service.is_configured,
+        _phone_id if _phone_id else "MISSING",
+        len(_token),
+        _token[:6] + "..." if _token else "NONE",
+        WHATSAPP_API_BASE,
+    )
 
     # Start background reminder scheduler as a fallback.
     # Set DISABLE_REMINDER_SCHEDULER=true if using Celery beat instead.
