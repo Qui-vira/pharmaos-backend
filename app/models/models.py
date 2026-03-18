@@ -96,6 +96,7 @@ class ReminderStatus(str, enum.Enum):
 class ConsultationStatus(str, enum.Enum):
     intake = "intake"
     ai_processing = "ai_processing"
+    awaiting_payment = "awaiting_payment"
     pending_review = "pending_review"
     pharmacist_reviewing = "pharmacist_reviewing"
     approved = "approved"
@@ -523,6 +524,7 @@ class Consultation(Base):
     )
     symptom_summary: Mapped[Optional[str]] = mapped_column(Text)
     ai_questions_asked: Mapped[Optional[dict]] = mapped_column(JSONB, default=list)
+    consultation_fee_paid: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     assigned_pharmacist_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"))
     channel: Mapped[OrderChannel] = mapped_column(SAEnum(OrderChannel, name="order_channel_enum"), default=OrderChannel.whatsapp)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

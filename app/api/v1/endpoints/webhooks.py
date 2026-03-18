@@ -176,6 +176,7 @@ async def route_inbound_message(
                 Consultation.status.in_([
                     ConsultationStatus.intake,
                     ConsultationStatus.ai_processing,
+                    ConsultationStatus.awaiting_payment,
                     ConsultationStatus.pending_review,
                     ConsultationStatus.pharmacist_reviewing,
                     ConsultationStatus.approved,
@@ -237,7 +238,7 @@ async def handle_consultation_message(
 ):
     """Handle a message within an active consultation."""
     from app.services.consultation_flow import (
-        handle_intake_message, handle_approved_message,
+        handle_intake_message, handle_approved_message, handle_awaiting_payment_message,
     )
 
     # Record customer message first
@@ -259,6 +260,9 @@ async def handle_consultation_message(
     try:
         if consultation.status in (ConsultationStatus.intake, ConsultationStatus.ai_processing):
             await handle_intake_message(db, patient, consultation, message, button_id=button_id)
+
+        elif consultation.status == ConsultationStatus.awaiting_payment:
+            await handle_awaiting_payment_message(db, patient, consultation, message, button_id=button_id)
 
         elif consultation.status == ConsultationStatus.approved:
             await handle_approved_message(db, patient, consultation, message, button_id=button_id)

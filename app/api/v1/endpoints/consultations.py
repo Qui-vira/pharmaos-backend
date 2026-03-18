@@ -33,11 +33,15 @@ async def list_consultations(
     current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
     db: AsyncSession = Depends(get_db),
 ):
-    """List consultations for the current pharmacy, filterable by status."""
+    """List consultations for the current pharmacy, filterable by status.
+    Excludes awaiting_payment consultations (fee not yet paid) unless explicitly filtered."""
     query = select(Consultation).where(Consultation.org_id == current_user.org_id)
 
     if status_filter:
         query = query.where(Consultation.status == ConsultationStatus(status_filter))
+    else:
+        # Hide unpaid consultations from the default view
+        query = query.where(Consultation.status != ConsultationStatus.awaiting_payment)
 
     query = query.order_by(Consultation.created_at.desc())
 

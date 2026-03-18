@@ -5,6 +5,7 @@ Drives the WhatsApp intake/prescription/delivery flow.
 States:
   intake          → AI gathers symptoms via structured questions
   ai_processing   → AI producing summary (transitional)
+  awaiting_payment → Consultation fee must be paid before pharmacist review
   pending_review  → Summary ready, waiting for pharmacist
   pharmacist_reviewing → Pharmacist is working on it
   approved        → Prescription sent to patient, awaiting PICKUP/DELIVERY/PAY
@@ -246,6 +247,62 @@ async def handle_intake_message(
     await db.flush()
 
 
+async def handle_awaiting_payment_message(
+    db: AsyncSession,
+    patient: Patient,
+    consultation: Consultation,
+    message: str,
+    button_id: Optional[str] = None,
+):
+    """
+    Handle patient messages when consultation is in 'awaiting_payment' state.
+    Patient must pay the consultation fee before a pharmacist reviews.
+    """
+    wa_phone = _normalize_phone_for_wa(patient.phone)
+    state = _get_intake_state(consultation)
+    fee = state.get("consultation_fee", 0)
+
+    logger.info("Awaiting payment: consultation=%s button_id=%s message=%r",
+                consultation.id, button_id, message[:100])
+
+    if button_id == "pay_consultation_fee":
+        # TODO: Replace with actual Paystack/Flutterwave payment link generation
+        payment_url = "https://paystack.com/pay/pharmaos-consultation-fee"
+        reply = f"Pay your consultation fee (\u20A6{fee:,.2f}) here:\n{payment_url}"
+        await whatsapp_service.send_text(wa_phone, reply)
+        _record_bot_msg(db, consultation.id, reply)
+
+    elif button_id == "confirm_consultation_payment" or message.strip().lower() in ("paid", "done", "confirmed"):
+        # Manual payment confirmation (until Paystack webhook is integrated)
+        consultation.consultation_fee_paid = True
+        consultation.status = ConsultationStatus.pending_review
+
+        reply = (
+            "Payment received! A pharmacist is now reviewing your case. "
+            "You will receive a response shortly."
+        )
+        await whatsapp_service.send_text(wa_phone, reply)
+        _record_bot_msg(db, consultation.id, reply)
+
+        logger.info("Consultation fee paid for consultation=%s, now pending_review", consultation.id)
+    else:
+        # Remind them to pay
+        reply = (
+            f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist can review your case.\n\n"
+            f"Please tap 'Pay Now' below to proceed."
+        )
+        await whatsapp_service.send_button_message(
+            to=wa_phone,
+            body=reply,
+            buttons=[
+                {"id": "pay_consultation_fee", "title": "Pay Now"},
+            ],
+        )
+        _record_bot_msg(db, consultation.id, reply)
+
+    await db.flush()
+
+
 async def handle_approved_message(
     db: AsyncSession,
     patient: Patient,
@@ -437,6 +494,21 @@ async def send_payment_confirmed_delivery_selection(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+async def _get_consultation_fee(db: AsyncSession, org_id) -> float:
+    """Get the consultation fee from pharmacy settings. Returns 0 if not set."""
+    result = await db.execute(
+        select(Organization.settings).where(Organization.id == org_id)
+    )
+    row = result.one_or_none()
+    if row and row.settings:
+        fee = row.settings.get("consultation_fee", 0)
+        try:
+            return float(fee)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 async def _finish_intake(
     db: AsyncSession,
     consultation: Consultation,
@@ -444,7 +516,7 @@ async def _finish_intake(
     state: dict,
     wa_phone: str,
 ):
-    """Finish the intake flow: generate summary, notify patient, push to pharmacist."""
+    """Finish the intake flow: generate summary, then either collect fee or push to pharmacist."""
     # Build summary from collected data
     symptoms = state.get("symptoms", "Not provided")
     duration = state.get("duration", "Not provided")
@@ -486,19 +558,46 @@ async def _finish_intake(
     state["intake_step"] = "summary"
     _set_intake_state(consultation, state)
 
-    # Transition to pending_review
-    consultation.status = ConsultationStatus.pending_review
+    # Check if pharmacy charges a consultation fee
+    fee = await _get_consultation_fee(db, consultation.org_id)
 
-    # Tell the patient
-    reply = (
-        "Thank you! A pharmacist is now reviewing your case. "
-        "You will receive a response shortly."
-    )
-    await whatsapp_service.send_text(wa_phone, reply)
-    _record_bot_msg(db, consultation.id, reply)
+    if fee > 0:
+        # Transition to awaiting_payment — pharmacist won't see it until paid
+        consultation.status = ConsultationStatus.awaiting_payment
 
-    logger.info("Intake complete for consultation=%s, now pending_review. Summary: %s",
-                consultation.id, summary[:100])
+        reply = (
+            f"Thank you for the information!\n\n"
+            f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist reviews your case.\n\n"
+            f"Tap below to pay."
+        )
+        await whatsapp_service.send_button_message(
+            to=wa_phone,
+            body=reply,
+            buttons=[
+                {"id": "pay_consultation_fee", "title": "Pay Now"},
+            ],
+        )
+        _record_bot_msg(db, consultation.id, reply)
+
+        state["consultation_fee"] = fee
+        _set_intake_state(consultation, state)
+
+        logger.info("Intake complete for consultation=%s, awaiting_payment (fee=%.2f). Summary: %s",
+                    consultation.id, fee, summary[:100])
+    else:
+        # No fee — go straight to pending_review
+        consultation.status = ConsultationStatus.pending_review
+        consultation.consultation_fee_paid = True  # No fee = effectively paid
+
+        reply = (
+            "Thank you! A pharmacist is now reviewing your case. "
+            "You will receive a response shortly."
+        )
+        await whatsapp_service.send_text(wa_phone, reply)
+        _record_bot_msg(db, consultation.id, reply)
+
+        logger.info("Intake complete for consultation=%s, now pending_review (no fee). Summary: %s",
+                    consultation.id, summary[:100])
 
 
 async def _ai_fallback(

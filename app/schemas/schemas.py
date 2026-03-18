@@ -536,6 +536,7 @@ class ConsultationResponse(BaseModel):
     patient_id: UUID
     status: str
     symptom_summary: Optional[str] = None
+    consultation_fee_paid: bool = False
     channel: str
     assigned_pharmacist_id: Optional[UUID] = None
     messages: List[ConsultationMessageResponse] = []
