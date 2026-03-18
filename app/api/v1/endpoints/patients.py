@@ -139,6 +139,15 @@ async def self_register_patient(
     if not org or not org.is_active:
         raise HTTPException(status_code=400, detail="Invalid or inactive pharmacy.")
 
+    # Check subscription status
+    from app.core.subscription import check_subscription
+    sub = await check_subscription(payload.org_id, db)
+    if not sub["active"]:
+        raise HTTPException(
+            status_code=400,
+            detail="This pharmacy's subscription is currently inactive. Please contact the pharmacy.",
+        )
+
     # Validate phone format
     phone = payload.phone.strip()
     if not re.match(r"^\+?\d{10,15}$", phone):

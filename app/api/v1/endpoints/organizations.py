@@ -85,6 +85,23 @@ async def get_my_org(
     return OrgResponse.model_validate(org)
 
 
+@router.get("/me/subscription")
+async def get_my_subscription(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current organization's subscription status."""
+    from app.core.subscription import check_subscription, check_consultation_limit
+
+    sub = await check_subscription(current_user.org_id, db)
+    limits = await check_consultation_limit(current_user.org_id, db)
+
+    return {
+        **sub,
+        "consultation_limit": limits,
+    }
+
+
 @router.put("/me", response_model=OrgResponse)
 async def update_my_org(
     payload: OrgUpdateRequest,

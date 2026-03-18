@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles, TokenData
+from app.core.subscription import require_active_subscription
 from app.models.models import (
     Consultation, ConsultationMessage, PharmacistAction,
     ConsultationStatus, MessageSender, Notification, User,

@@ -206,6 +206,31 @@ async def route_inbound_message(
 
     # Default: Start new consultation if patient exists
     if patient:
+        # Check subscription before creating new consultation
+        from app.core.subscription import check_subscription, check_consultation_limit
+        sub_status = await check_subscription(patient.org_id, db)
+        if not sub_status["active"]:
+            logger.warning("Subscription expired for org=%s, blocking new consultation", patient.org_id)
+            from app.services.whatsapp import whatsapp_service as _wa
+            await _wa.send_text(
+                _normalize_phone(phone),
+                "Your pharmacy's subscription is currently inactive. "
+                "Please contact your pharmacy for assistance.",
+            )
+            return
+
+        limit_status = await check_consultation_limit(patient.org_id, db)
+        if not limit_status["allowed"]:
+            logger.warning("Consultation limit reached for org=%s (%d/%d)",
+                          patient.org_id, limit_status["used"], limit_status["limit"])
+            from app.services.whatsapp import whatsapp_service as _wa
+            await _wa.send_text(
+                _normalize_phone(phone),
+                "Your pharmacy has reached its monthly consultation limit. "
+                "Please contact your pharmacy for assistance.",
+            )
+            return
+
         logger.info("Starting new consultation for patient=%s org=%s", patient.id, patient.org_id)
         try:
             await start_new_consultation(db, patient, message)
