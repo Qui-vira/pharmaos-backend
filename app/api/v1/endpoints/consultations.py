@@ -136,6 +136,46 @@ async def submit_pharmacist_action(
     return PharmacistActionResponse.model_validate(action)
 
 
+@router.post("/{consultation_id}/messages", response_model=ConsultationResponse)
+async def send_pharmacist_message(
+    consultation_id: UUID,
+    payload: dict,
+    current_user: TokenData = Depends(require_roles("pharmacy_admin", "pharmacist")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Pharmacist sends a direct message in the consultation chat."""
+    message_text = (payload.get("message") or "").strip()
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    result = await db.execute(
+        select(Consultation).where(
+            Consultation.id == consultation_id,
+            Consultation.org_id == current_user.org_id,
+        )
+    )
+    consultation = result.scalar_one_or_none()
+    if not consultation:
+        raise HTTPException(status_code=404, detail="Consultation not found.")
+
+    if consultation.status in (ConsultationStatus.completed, ConsultationStatus.cancelled):
+        raise HTTPException(status_code=400, detail="Cannot send messages to a closed consultation.")
+
+    msg = ConsultationMessage(
+        consultation_id=consultation_id,
+        sender_type=MessageSender.pharmacist,
+        message=message_text,
+    )
+    db.add(msg)
+
+    # Auto-assign pharmacist if not yet assigned
+    if not consultation.assigned_pharmacist_id:
+        consultation.assigned_pharmacist_id = current_user.user_id
+
+    await db.flush()
+    return ConsultationResponse.model_validate(consultation)
+
+
 @router.post("/{consultation_id}/approve", response_model=ConsultationResponse)
 async def approve_consultation(
     consultation_id: UUID,
