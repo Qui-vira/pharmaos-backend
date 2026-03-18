@@ -85,6 +85,7 @@ class ReminderType(str, enum.Enum):
     adherence = "adherence"
     follow_up = "follow_up"
     pickup = "pickup"
+    abandoned = "abandoned"
 
 class ReminderStatus(str, enum.Enum):
     pending = "pending"

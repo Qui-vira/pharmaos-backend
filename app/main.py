@@ -3,6 +3,8 @@ PharmaOS AI - Main Application Entry Point
 FastAPI application with middleware, CORS, and route mounting.
 """
 
+import asyncio
+import logging
 import traceback
 from contextlib import asynccontextmanager
 
@@ -16,15 +18,58 @@ from app.core.database import engine, Base
 from app.api.v1.router import api_router
 from app.middleware.rate_limit import RateLimitMiddleware
 
+logger = logging.getLogger(__name__)
+
+# Background reminder scheduler task handle
+_reminder_task: asyncio.Task = None
+
+
+async def _reminder_scheduler_loop():
+    """
+    Background task that runs the reminder engine every 15 minutes.
+    Fallback for when Celery beat is not available (e.g. Railway).
+    """
+    from app.core.database import async_session_factory
+    from app.services.reminder_engine import run_reminder_cycle
+
+    logger.info("Reminder scheduler started (15-min interval)")
+    while True:
+        try:
+            await asyncio.sleep(900)  # 15 minutes
+            async with async_session_factory() as db:
+                stats = await run_reminder_cycle(db)
+                await db.commit()
+            logger.info("Reminder scheduler cycle: %s", stats)
+        except asyncio.CancelledError:
+            logger.info("Reminder scheduler stopped")
+            break
+        except Exception:
+            logger.exception("Reminder scheduler error")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
+    global _reminder_task
+
     # Startup: Create tables if they don't exist (dev only — use Alembic in production)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Start background reminder scheduler as a fallback.
+    # Set DISABLE_REMINDER_SCHEDULER=true if using Celery beat instead.
+    if not getattr(settings, "DISABLE_REMINDER_SCHEDULER", False):
+        _reminder_task = asyncio.create_task(_reminder_scheduler_loop())
+
     yield
-    # Shutdown: Dispose engine
+
+    # Shutdown
+    if _reminder_task and not _reminder_task.done():
+        _reminder_task.cancel()
+        try:
+            await _reminder_task
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
 
 

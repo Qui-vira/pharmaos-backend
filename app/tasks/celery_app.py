@@ -65,29 +65,23 @@ def run_async(coro):
 @celery_app.task(name="app.tasks.celery_app.check_due_reminders")
 def check_due_reminders():
     """
-    Periodic: Find pending reminders where scheduled_at <= now.
-    Send WhatsApp messages and update status.
+    Periodic: Generate automated reminders and process all due reminders.
+    Sends WhatsApp messages and updates status.
     """
-    # NOTE: In production, use a sync DB session here (Celery runs sync).
-    # This is the task skeleton — actual DB calls need sync SQLAlchemy session.
-    logger.info("Checking due reminders...")
+    logger.info("Running reminder cycle...")
 
-    # Pseudocode for production implementation:
-    # 1. session = get_sync_session()
-    # 2. reminders = session.query(Reminder).filter(
-    #        Reminder.status == 'pending',
-    #        Reminder.scheduled_at <= datetime.utcnow()
-    #    ).all()
-    # 3. For each reminder:
-    #    a. patient = session.query(Patient).get(reminder.patient_id)
-    #    b. product = session.query(Product).get(reminder.product_id) if reminder.product_id else None
-    #    c. result = run_async(whatsapp_service.send_refill_reminder(patient.phone, patient.full_name, product.name))
-    #    d. reminder.status = 'sent' if result['status'] == 'sent' else 'failed'
-    #    e. reminder.sent_at = datetime.utcnow()
-    #    f. If reminder.recurrence_rule: create next occurrence
-    # 4. session.commit()
+    async def _run():
+        from app.core.database import async_session_factory
+        from app.services.reminder_engine import run_reminder_cycle
 
-    return {"checked": 0, "sent": 0, "failed": 0}
+        async with async_session_factory() as db:
+            stats = await run_reminder_cycle(db)
+            await db.commit()
+        return stats
+
+    result = run_async(_run())
+    logger.info("Reminder cycle complete: %s", result)
+    return result
 
 
 @celery_app.task(name="app.tasks.celery_app.send_whatsapp_message")
