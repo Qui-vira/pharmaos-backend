@@ -593,47 +593,34 @@ async def _finish_intake(
     state["intake_step"] = "summary"
     _set_intake_state(consultation, state)
 
-    # Check if pharmacy charges a consultation fee
+    # ALWAYS transition to awaiting_payment after intake — no exceptions.
     fee = await _get_consultation_fee(db, consultation.org_id)
+    if fee <= 0:
+        fee = DEFAULT_CONSULTATION_FEE  # Force platform default
+        logger.warning("Fee was ≤0 for org=%s, forcing platform default ₦%.2f", consultation.org_id, fee)
 
-    if fee > 0:
-        # Transition to awaiting_payment — pharmacist won't see it until paid
-        consultation.status = ConsultationStatus.awaiting_payment
+    consultation.status = ConsultationStatus.awaiting_payment
 
-        reply = (
-            f"Thank you for the information!\n\n"
-            f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist reviews your case.\n\n"
-            f"Tap 'Pay Now' to proceed with payment."
-        )
-        await whatsapp_service.send_button_message(
-            to=wa_phone,
-            body=reply,
-            buttons=[
-                {"id": "pay_consultation_fee", "title": "Pay Now"},
-                {"id": "confirm_consultation_payment", "title": "I Have Paid"},
-            ],
-        )
-        _record_bot_msg(db, consultation.id, reply)
+    reply = (
+        f"Thank you for the information!\n\n"
+        f"A consultation fee of \u20A6{fee:,.2f} is required before a pharmacist reviews your case.\n\n"
+        f"Tap 'Pay Now' to proceed with payment."
+    )
+    await whatsapp_service.send_button_message(
+        to=wa_phone,
+        body=reply,
+        buttons=[
+            {"id": "pay_consultation_fee", "title": "Pay Now"},
+            {"id": "confirm_consultation_payment", "title": "I Have Paid"},
+        ],
+    )
+    _record_bot_msg(db, consultation.id, reply)
 
-        state["consultation_fee"] = fee
-        _set_intake_state(consultation, state)
+    state["consultation_fee"] = fee
+    _set_intake_state(consultation, state)
 
-        logger.info("Intake complete for consultation=%s, awaiting_payment (fee=%.2f). Summary: %s",
-                    consultation.id, fee, summary[:100])
-    else:
-        # No fee — go straight to pending_review
-        consultation.status = ConsultationStatus.pending_review
-        consultation.consultation_fee_paid = True  # No fee = effectively paid
-
-        reply = (
-            "Thank you! A pharmacist is now reviewing your case. "
-            "You will receive a response shortly."
-        )
-        await whatsapp_service.send_text(wa_phone, reply)
-        _record_bot_msg(db, consultation.id, reply)
-
-        logger.info("Intake complete for consultation=%s, now pending_review (no fee). Summary: %s",
-                    consultation.id, summary[:100])
+    logger.info("Intake complete for consultation=%s, awaiting_payment (fee=%.2f). Summary: %s",
+                consultation.id, fee, summary[:100])
 
 
 async def _ai_fallback(
@@ -660,16 +647,12 @@ async def _ai_fallback(
         ai_result = await process_consultation_message(conversation)
 
         if ai_result.get("type") == "summary":
-            # AI says we have enough info — finish intake
-            consultation.symptom_summary = ai_result["content"]
-            consultation.status = ConsultationStatus.pending_review
-
-            reply = (
-                "Thank you! A pharmacist is now reviewing your case. "
-                "You will receive a response shortly."
-            )
-            await whatsapp_service.send_text(wa_phone, reply)
-            _record_bot_msg(db, consultation.id, reply)
+            # AI says we have enough info — route through _finish_intake
+            # so the fee gate is applied (never bypass to pending_review directly)
+            state = _get_intake_state(consultation)
+            if not state.get("symptoms"):
+                state["symptoms"] = ai_result.get("content", "See conversation history")
+            await _finish_intake(db, consultation, patient, state, wa_phone)
         else:
             # Send AI's follow-up question
             reply = ai_result.get("content", "Could you tell me more about your symptoms?")
