@@ -32,6 +32,7 @@ from app.schemas.schemas import (
     GoogleAuthRequest,
     SendPhoneOtpRequest, VerifyPhoneRequest,
     Enable2FAResponse, Verify2FARequest,
+    UpdateProfileRequest, ChangePasswordRequest,
 )
 from app.middleware.audit import log_auth_event
 
@@ -704,3 +705,55 @@ async def disable_2fa(
     await log_auth_event(db, "2fa_disabled", user.email, True, ip, user.org_id, user.id)
 
     return {"message": "Two-factor authentication disabled.", "two_factor_enabled": False}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PROFILE & PASSWORD
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    payload: UpdateProfileRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the current user's profile (name, phone)."""
+    result = await db.execute(select(User).where(User.id == current_user.user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.phone is not None:
+        user.phone = payload.phone
+
+    await db.flush()
+
+    await log_auth_event(db, "profile_updated", user.email, True, "internal", user.org_id, user.id)
+
+    return UserResponse.model_validate(user)
+
+
+@router.put("/password", response_model=dict)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the current user's password. Requires current password verification."""
+    result = await db.execute(select(User).where(User.id == current_user.user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+
+    user.password_hash = hash_password(payload.new_password)
+    await db.flush()
+
+    await log_auth_event(db, "password_changed", user.email, True, "internal", user.org_id, user.id)
+
+    return {"message": "Password changed successfully."}

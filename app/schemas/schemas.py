@@ -567,6 +567,125 @@ class NotificationResponse(BaseModel):
     created_at: datetime
 
 
+# ─── Telepharmacy Schemas ──────────────────────────────────────────────────
+
+
+class TelepharmacySessionCreate(BaseModel):
+    patient_id: UUID
+    pharmacist_id: Optional[UUID] = None
+    session_type: str = Field("video", pattern="^(video|voice|chat)$")
+    notes: Optional[str] = None
+    consultation_id: Optional[UUID] = None
+
+
+class TelepharmacySessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    org_id: UUID
+    patient_id: UUID
+    pharmacist_id: Optional[UUID] = None
+    session_type: str
+    status: str
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    recording_url: Optional[str] = None
+    notes: Optional[str] = None
+    prescription: Optional[dict] = None
+    consultation_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TelepharmacyStatusUpdate(BaseModel):
+    status: str = Field(..., pattern="^(waiting|ringing|active|completed|cancelled)$")
+
+
+class TelepharmacyDrugPlanItem(BaseModel):
+    product_name: str
+    dosage: str
+    quantity: int = Field(..., gt=0)
+    unit_price: Decimal = Field(..., gt=0)
+    instructions: Optional[str] = None
+
+
+class TelepharmacyPrescriptionRequest(BaseModel):
+    diagnosis: str = Field(..., min_length=5)
+    drug_plan: List[TelepharmacyDrugPlanItem] = Field(..., min_length=1)
+    total_price: Decimal = Field(..., gt=0)
+    notes: Optional[str] = None
+
+
+# ─── Snap to Stock Schemas ────────────────────────────────────────────────
+
+
+class SnapAnalyzeRequest(BaseModel):
+    image_base64: str = Field(..., min_length=100)
+    mime_type: str = Field("image/jpeg", pattern="^image/(jpeg|png|webp)$")
+
+
+class ExtractedProduct(BaseModel):
+    product_name: str
+    strength: Optional[str] = None
+    manufacturer: Optional[str] = None
+    batch_number: Optional[str] = None
+    expiry_date: Optional[str] = None
+
+
+class SnapAnalyzeResponse(BaseModel):
+    products: List[dict]
+
+
+class SnapMatchRequest(BaseModel):
+    product_names: List[str] = Field(..., min_length=1)
+
+
+class MatchedProduct(BaseModel):
+    extracted_name: str
+    matched_product_id: Optional[str] = None
+    matched_product_name: Optional[str] = None
+    generic_name: Optional[str] = None
+    strength: Optional[str] = None
+    manufacturer: Optional[str] = None
+    confidence: str
+    alternatives: List[dict] = []
+
+
+class SnapMatchResponse(BaseModel):
+    matches: List[MatchedProduct]
+
+
+class SnapConfirmItem(BaseModel):
+    product_id: UUID
+    quantity: int = Field(..., gt=0)
+    cost_price: Optional[Decimal] = None
+    selling_price: Optional[Decimal] = None
+
+
+class SnapConfirmRequest(BaseModel):
+    items: List[SnapConfirmItem] = Field(..., min_length=1)
+
+
+class SnapConfirmResponse(BaseModel):
+    added: int
+    updated: int
+    errors: List[str] = []
+
+
+# ─── Profile & Password Schemas ──────────────────────────────────────────
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=2, max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 # ─── Pagination ─────────────────────────────────────────────────────────────
 
 

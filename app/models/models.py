@@ -104,6 +104,18 @@ class ConsultationStatus(str, enum.Enum):
     completed = "completed"
     cancelled = "cancelled"
 
+class TelepharmacySessionType(str, enum.Enum):
+    video = "video"
+    voice = "voice"
+    chat = "chat"
+
+class TelepharmacyStatus(str, enum.Enum):
+    waiting = "waiting"
+    ringing = "ringing"
+    active = "active"
+    completed = "completed"
+    cancelled = "cancelled"
+
 class MessageSender(str, enum.Enum):
     customer = "customer"
     ai = "ai"
@@ -570,6 +582,44 @@ class PharmacistAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     consultation: Mapped["Consultation"] = relationship(back_populates="pharmacist_action")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  TELEPHARMACY
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TelepharmacySession(Base):
+    """Remote pharmacist consultation session (video/voice/chat)."""
+    __tablename__ = "telepharmacy_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=new_uuid)
+    org_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False)
+    patient_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    pharmacist_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"))
+    session_type: Mapped[TelepharmacySessionType] = mapped_column(
+        SAEnum(TelepharmacySessionType, name="telepharmacy_session_type_enum"), default=TelepharmacySessionType.video
+    )
+    status: Mapped[TelepharmacyStatus] = mapped_column(
+        SAEnum(TelepharmacyStatus, name="telepharmacy_status_enum"), default=TelepharmacyStatus.waiting
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    prescription: Mapped[Optional[dict]] = mapped_column(JSONB)
+    consultation_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("consultations.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    patient: Mapped["Patient"] = relationship(lazy="selectin")
+    pharmacist: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[pharmacist_id])
+
+    __table_args__ = (
+        Index("ix_telepharmacy_org_status", "org_id", "status"),
+        Index("ix_telepharmacy_pharmacist", "pharmacist_id"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
