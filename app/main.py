@@ -135,6 +135,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 # ─── Middleware (order matters: last added = first executed) ─────────────────
 
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS must be added LAST so it executes FIRST (FastAPI reverses middleware order).
+# This ensures OPTIONS preflight requests get CORS headers before any other middleware.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -142,9 +147,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
-
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware)
 
 
 # ─── Global Exception Handler ───────────────────────────────────────────────
